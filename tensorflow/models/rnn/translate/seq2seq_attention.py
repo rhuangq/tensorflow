@@ -81,7 +81,14 @@ tf.app.flags.DEFINE_boolean("self_test", False,
                             "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False,
                             "Train using fp16 instead of fp32.")
+
+#multi-device computation, logging
+tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
+tf.app.flags.DEFINE_boolean("log_device", False, "Set to True to log computation device placement")
+tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
+
 FLAGS = tf.app.flags.FLAGS
+
 
 
 def _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate):
@@ -454,7 +461,9 @@ def train():
   random.seed(FLAGS.random_seed)
 
 
-  with tf.Graph().as_default(), tf.Session() as session:
+  with tf.Graph().as_default(), \
+       tf.Session(config=tf.ConfigProto(allow_soft_placement=FLAGS.soft_placement,
+                                        log_device_placement=FLAGS.log_device)) as session:
     initializer = tf.random_uniform_initializer(-trn_config.initial_weight, trn_config.initial_weight, seed=FLAGS.random_seed)
     with tf.variable_scope("TranslationModel", reuse=None, initializer=initializer):
       trn_model = TranslationModel(True, trn_config)
@@ -464,6 +473,8 @@ def train():
 
     saver = tf.train.Saver(tf.all_variables(), max_to_keep=0)
     restore_model(saver, session)
+    tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
+
     train_set = read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
     train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
     train_total_size = sum(train_bucket_sizes)
@@ -477,7 +488,9 @@ def train():
 
     dev_set = read_dev_data(src_dev, tgt_dev)
     print("Total %d sequences in the development data" %(len(dev_set)))
-    tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
+
+    #TODO: write training stats for tensorboard
+    if FLAGS.log_stats: tf.train.SummaryWriter(FLAGS.output_dir, session.graph)
 
     dev_losses = []
     while True:
