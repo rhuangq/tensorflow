@@ -490,7 +490,11 @@ def train():
     print("Total %d sequences in the development data" %(len(dev_set)))
 
     #TODO: write training stats for tensorboard
-    if FLAGS.log_stats: tf.train.SummaryWriter(FLAGS.output_dir, session.graph)
+    if FLAGS.log_stats:
+      tf.merge_all_summaries()
+      summary_writer = tf.train.SummaryWriter(FLAGS.output_dir, session.graph)
+    else:
+      summary_writer = None
 
     dev_losses = []
     while True:
@@ -503,6 +507,8 @@ def train():
         for dev_src_input, dev_tgt_input in get_minibatch_dev(dev_config.batch_size, dev_set):
           dev_model.run_minibatch(session, dev_src_input, dev_tgt_input)
         _, dev_ppl, dev_loss = dev_model.report_progress(session)
+        if summary_writer:
+          summary_writer.add_summary(tf.Summary(value=[tf.Summary.Value(tag="Error", simple_value=dev_loss)]), iters)
         print("Has run training on %d minibatches, the PPL/Loss on the dev set is %.3f , %.3f" %(iters, dev_ppl, dev_loss))
         dev_model.reset_stats()
         if len(dev_losses) > 1 and (dev_losses[-1] - dev_loss) / dev_losses[-1] < 0.01:
@@ -510,6 +516,7 @@ def train():
         dev_losses.append(dev_loss)
         checkpoint_path = os.path.join(FLAGS.output_dir, "nmt.ckpt")
         saver.save(session, checkpoint_path, global_step=iters)
+
 
       if iters > FLAGS.max_iters: break
 
