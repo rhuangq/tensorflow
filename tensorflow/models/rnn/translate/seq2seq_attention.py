@@ -70,6 +70,7 @@ tf.app.flags.DEFINE_integer("tgt_vocab_size", 30000, "target vocabulary size.")
 tf.app.flags.DEFINE_boolean("use_lstm", False, "Use LSTM or GRU as the RNN layers")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
+tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
 
 #data
 tf.app.flags.DEFINE_string("data_dir", "data", "Data directory, assume {source|target}.{train|valid|vocab} files (generated in the QNN setup)")
@@ -132,15 +133,14 @@ class SequenceLength(object):
     return tf.cast(tf.not_equal(data, tf.slice(self.mapper, [0, 0], [-1, tf.shape(data)[1]])), dtype=tf.float32)
 
 
-def Seq2SeqAttention(
-               source_inputs,
-               target_inputs,
+def Seq2SeqRnn(
+               inputs,
                num_cells,
                num_layers,
                use_lstm=False,
                use_birnn=False,
-               src_seq_lengths=None,
-               tgt_seq_lengths=None,
+               seq_lengths=None,
+              init_state=None,
                keep_rate=0.5,
                initializer=None,
                scope=None,
@@ -154,43 +154,121 @@ def Seq2SeqAttention(
   is to let it handle different types of input and output data.
   """
 
-  with vs.variable_scope(scope or "Seq2SeqAttention", initializer=initializer) as varscope:
-    if varscope.caching_device is None:
-      varscope.set_caching_device(lambda op: op.device)
-
-    batch_size = source_inputs.get_shape()[0]
-    with vs.variable_scope("encoder"):
-      with vs.variable_scope("forward"):
-        encoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-        encoder_init_state = encoder_cell.zero_state(batch_size, dtype)
+  batch_size = inputs.get_shape()[0]
+  with vs.variable_scope(scope or "Seq2SeqRnn", initializer=initializer):
+    init_state_forward = None
+    init_state_backward = None
+    if init_state:
       if use_birnn:
-        with vs.variable_scope("backward"):
-          encoder_cell_bw = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-          encoder_init_state_bw = encoder_cell.zero_state(batch_size, dtype)
-        encoder_outputs, encoder_final_state = tf.nn.bidirectional_dynamic_rnn(encoder_cell, encoder_cell_bw,
-                                                                               source_inputs, src_seq_lengths,
-                                                                               initial_state_fw=encoder_init_state,
-                                                                               initial_state_bw=encoder_init_state_bw,
-                                                                               dtype=dtype, time_major=False)
-        decoder_init_state = encoder_final_state[0]
+        init_state_forward, init_state_backward = init_state
       else:
-        encoder_outputs, encoder_final_state = tf.nn.dynamic_rnn(encoder_cell, source_inputs, src_seq_lengths,
-                                                                 initial_state=encoder_init_state, dtype=dtype, time_major=False)
-        decoder_init_state = encoder_final_state
+        init_state_forward = init_state
 
-    with vs.variable_scope("decoder"):
-      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-      decoder_outputs, decoder_final_state = tf.nn.dynamic_rnn(decoder_cell, target_inputs, tgt_seq_lengths, initial_state=decoder_init_state,
-                                                               dtype=dtype, time_major=False)
+    with vs.variable_scope("forward"):
+      forward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      if init_state_forward is None:
+        init_state_forward = forward_cell.zero_state(batch_size, dtype)
+    if use_birnn:
+      with vs.variable_scope("backward"):
+        backward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+        if init_state_backward is None:
+          init_state_backward = backward_cell.zero_state(batch_size, dtype)
+      outputs, final_state = tf.nn.bidirectional_dynamic_rnn(forward_cell, backward_cell,
+                                                             inputs, tf.cast(seq_lengths, tf.int64),
+                                                             initial_state_fw=init_state_forward,
+                                                             initial_state_bw=init_state_backward,
+                                                             dtype=dtype, time_major=False)
+      outputs = tf.concat(2, outputs)
+    else:
+      outputs, final_state = tf.nn.dynamic_rnn(forward_cell, inputs, seq_lengths,
+                                               initial_state=init_state_forward, dtype=dtype, time_major=False)
 
-    return decoder_outputs, decoder_final_state
+    return outputs, final_state
+
+def GlobalAttention(
+    batch_size,
+    src_dim,
+    tgt_dim,
+    source_inputs,
+               target_inputs,
+               out_dim,
+                src_seq_lengths,
+               tgt_seq_lengths,
+    src_values=None,
+    dot_dim=None,
+               initializer=None,
+               scope=None,
+               dtype=tf.float32):
+  """
+  Sequence-to-sequence model with attention.
+  This class implements a multi-layer recurrent neural network attention-based decoder.
+  This is very similar to what we've implemented in QNN and Torch.
+  This method builds the graph for the Sequence-to-Sequence part only. The idea
+  is to let it handle different types of input and output data.
+  """
+  if dot_dim is None: dot_dim = out_dim
+  with vs.variable_scope(scope or "GlobalAttention", initializer=initializer):
+    bs, _, sd = source_inputs.get_shape()
+    if bs != batch_size or sd != src_dim:
+      raise ValueError("source data dimension mismatch, batch_size expected %d vs actual %d, dimention expected %d vs actual %d"
+                       %(batch_size, bs, src_dim, sd))
+
+    bs, _, sd = target_inputs.get_shape()
+    if bs != batch_size or sd != tgt_dim:
+      raise ValueError("target data dimension mismatch, batch_size expected %d vs actual %d, dimention expected %d vs actual %d"
+                       %(batch_size, bs, tgt_dim, sd))
+
+    src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
+    src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
+    src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, out_dim], dtype=dtype)
+    src_add_trans_b = tf.get_variable("src_add_trans_b", [out_dim], dtype=dtype)
+    tgt_dot_trans_w = tf.get_variable("tgt_dot_trans_w", [tgt_dim, dot_dim], dtype=dtype)
+    tgt_dot_trans_b = tf.get_variable("tgt_dot_trans_b", [dot_dim], dtype=dtype)
+    tgt_add_trans_w = tf.get_variable("tgt_add_trans_w", [tgt_dim, out_dim], dtype=dtype)
+    tgt_add_trans_b = tf.get_variable("tgt_add_trans_b", [out_dim], dtype=dtype)
+
+    if src_values is None:
+      src_input_rs = tf.reshape(source_inputs, [-1, src_dim])
+      src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b), [batch_size, -1, dot_dim])
+      src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b), [batch_size, -1, out_dim])
+      src_values = (src_dot_values, src_add_values)
+    else:
+      src_dot_values, src_add_values = src_values
+
+    tgt_input_rs = tf.reshape(target_inputs, [-1, tgt_dim])
+    tgt_dot_values = tf.reshape(tf.add(tf.matmul(tgt_input_rs, tgt_dot_trans_w), tgt_dot_trans_b),
+                                [batch_size, -1, dot_dim])
+    tgt_add_values = tf.reshape(tf.add(tf.matmul(tgt_input_rs, tgt_add_trans_w), tgt_add_trans_b),
+                                [batch_size, -1, out_dim])
+
+    context_weights = []
+    out_padding = tf.zeros([tf.shape(target_inputs)[1], out_dim])
+    outputs = None
+    weights = []
+    for batch_idx in xrange(batch_size):
+      #extract one sequence
+      src_dot_value = tf.squeeze(tf.slice(src_dot_values, [batch_idx, 0, 0], [1, src_seq_lengths[batch_idx], -1]), [0])
+      src_add_value = tf.squeeze(tf.slice(src_add_values, [batch_idx, 0, 0], [1, src_seq_lengths[batch_idx], -1]), [0])
+      tgt_dot_value = tf.squeeze(tf.slice(tgt_dot_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
+      tgt_add_value = tf.squeeze(tf.slice(tgt_add_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
+      context_weight = tf.nn.softmax(tf.matmul(tgt_dot_value, src_dot_value, transpose_b=True)) # dim (tgt_len, src_len)
+      context = tf.add(tf.matmul(context_weight, src_add_value), tgt_add_value) #dim (tgt_len, out_dim)
+      padding = tf.slice(out_padding, [tgt_seq_lengths[batch_idx], 0], [-1, -1])
+      if outputs is None:
+        outputs = tf.concat(0, [context, padding])
+      else:
+        outputs = tf.concat(0, [outputs, context, padding])
+      weights.append(context_weights)
+
+    return src_values, tf.reshape(outputs, [batch_size, -1, out_dim]), context_weights
+
 
 class MTconfig(object):
   batch_size = 64
   embed_size = 128
   num_layers = 2
   use_lstm = True
-  use_birnn = False
+  use_birnn = True
   source_voc_size = 74
   target_voc_size = 54
   initial_weight = 0.1
@@ -215,6 +293,9 @@ class TranslationModel(object):
     self.source_voc_size = config.source_voc_size
     self.target_voc_size = config.target_voc_size
     self.dtype = config.dtype
+    self.dict = {}
+
+    if FLAGS.attention_type == 0: config.use_birnn = False
 
     self._source_input = tf.placeholder(tf.int32, [self.batch_size, None], name="source_input")
     self._target_input = tf.placeholder(tf.int32, [self.batch_size, None], name="target_input")
@@ -232,10 +313,49 @@ class TranslationModel(object):
     src_length = seq_length_op.get_length(self._source_input)
     tgt_length = seq_length_op.get_length(self._target_input)
 
-    s2s_outputs, _ = Seq2SeqAttention(s2s_src_input, s2s_tgt_input, self.num_cells, self.num_layers,
-                                      use_lstm=config.use_lstm, use_birnn=config.use_birnn,
-                                      src_seq_lengths=src_length, tgt_seq_lengths=tgt_length,
-                                      keep_rate=1.0 if not is_training else config.keep_rate)
+    with vs.variable_scope("encoder") as varscope:
+      encoder_outputs, encoder_final_states = Seq2SeqRnn(s2s_src_input,
+                                                       self.num_cells,
+                                                       self.num_layers,
+                                                       use_lstm=config.use_lstm,
+                                                       use_birnn=config.use_birnn,
+                                                       seq_lengths=src_length,
+                                                       init_state=None,
+                                                         scope=varscope,
+                                                       keep_rate=1.0 if not is_training else config.keep_rate)
+    if config.use_birnn:
+      decoder_init_state, _ = encoder_final_states
+    else:
+      decoder_init_state = encoder_final_states
+
+    with vs.variable_scope("decoder") as varscope:
+      decoder_outputs, decoder_final_states = Seq2SeqRnn(s2s_tgt_input,
+                                                         self.num_cells,
+                                                         self.num_layers,
+                                                         use_lstm=config.use_lstm,
+                                                         use_birnn=False,
+                                                         seq_lengths=tgt_length,
+                                                         init_state=decoder_init_state,
+                                                         scope=varscope,
+                                                         keep_rate=1.0 if not is_training else config.keep_rate)
+
+
+    if FLAGS.attention_type == 1:
+      src_values, s2s_outputs, attentions = GlobalAttention(self.batch_size,
+                                                          self.num_cells * 2 if config.use_birnn else self.num_cells,
+                                                          self.num_cells,
+                                                          encoder_outputs,
+                                              decoder_outputs,
+                                              self.num_cells,
+                                              src_length,
+                                              tgt_length,
+                                              src_values=None,
+                                              dot_dim=self.num_cells)
+    elif FLAGS.attention_type == 0:
+      s2s_outputs = decoder_outputs
+    else:
+      raise ValueError("attention type %d is not implemented yet" %(FLAGS.attention_type))
+
 
     with vs.variable_scope("output"):
       tgt_gen_cell = _create_rnn_multi_cell(config.use_lstm, config.embed_size, config.num_layers,
