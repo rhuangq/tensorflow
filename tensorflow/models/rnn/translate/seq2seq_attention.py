@@ -1,18 +1,3 @@
-# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
 """Sequence-to-sequence model with an attention mechanism."""
 
 from __future__ import absolute_import
@@ -43,8 +28,6 @@ _EOS_ID = 2
 
 logging = tf.logging
 
-
-
 #scheduling
 tf.app.flags.DEFINE_float("learning_rate", 0.5, "initial learning rate.")
 tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.8,
@@ -67,7 +50,7 @@ tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("src_vocab_size", 30000, "source vocabulary size.")
 tf.app.flags.DEFINE_integer("tgt_vocab_size", 30000, "target vocabulary size.")
-tf.app.flags.DEFINE_boolean("use_lstm", False, "Use LSTM or GRU as the RNN layers")
+tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
@@ -91,8 +74,9 @@ tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
 FLAGS = tf.app.flags.FLAGS
 
 
-
 def _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate):
+  """a helper function creates multi-layer RNNs"""
+
   if use_lstm:
     cell = tf.nn.rnn_cell.LSTMCell(num_cells)
   else:
@@ -107,7 +91,9 @@ def _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate):
   return cell
 
 class SequenceLength(object):
-  """a helper class computes the sequence length and assign weights"""
+  """a helper class computes the sequence length and assign weights
+  `data` has shape [batch_size, ?]. This class is to create length
+  tensor and weight tensor about the actual length and corresponding weight"""
 
   def __init__(self, batch_size, max_length, filler):
     self.batch_size = batch_size
@@ -146,12 +132,7 @@ def Seq2SeqRnn(
                scope=None,
                dtype=tf.float32):
   """
-  Sequence-to-sequence model with attention.
-  This class implements a multi-layer recurrent neural network as encoder,
-  and an attention-based decoder.
-  This is very similar to what we've implemented in QNN and Torch.
-  This method builds the graph for the Sequence-to-Sequence part only. The idea
-  is to let it handle different types of input and output data.
+  this function create multi layer RNN (including bidirectional), and run the RNN computation.
   """
 
   batch_size = inputs.get_shape()[0]
@@ -200,12 +181,10 @@ def GlobalAttention(
                scope=None,
                dtype=tf.float32):
   """
-  Sequence-to-sequence model with attention.
-  This class implements a multi-layer recurrent neural network attention-based decoder.
-  This is very similar to what we've implemented in QNN and Torch.
-  This method builds the graph for the Sequence-to-Sequence part only. The idea
-  is to let it handle different types of input and output data.
+  Compute the attention vector by looking at the whole source sequence and current step in target.
+   This function can be used in batch or called per step.
   """
+
   if dot_dim is None: dot_dim = out_dim
   with vs.variable_scope(scope or "GlobalAttention", initializer=initializer):
     bs, _, sd = source_inputs.get_shape()
@@ -264,6 +243,7 @@ def GlobalAttention(
 
 
 class MTconfig(object):
+  #TODO: generate this from the command line configs
   batch_size = 64
   embed_size = 128
   num_layers = 2
@@ -301,8 +281,8 @@ class TranslationModel(object):
     self._target_input = tf.placeholder(tf.int32, [self.batch_size, None], name="target_input")
     pad_batch = tf.constant(_EOS_ID, tf.int32, [self.batch_size, 1])
     target_output = tf.concat(1, [tf.slice(self._target_input, [0, 1], [-1, -1]), pad_batch])
-    #TODO: move embedding to CPU?
 
+    #TODO: move embedding to CPU?
     with vs.variable_scope("input"):
       src_embedding = tf.get_variable("source_embedding", [self.source_voc_size, self.num_cells], dtype=self.dtype)
       tgt_embedding = tf.get_variable("target_embedding", [self.target_voc_size, self.num_cells], dtype=self.dtype)
@@ -313,23 +293,26 @@ class TranslationModel(object):
     src_length = seq_length_op.get_length(self._source_input)
     tgt_length = seq_length_op.get_length(self._target_input)
 
+    encoder_init_state = None
+
     with vs.variable_scope("encoder") as varscope:
-      encoder_outputs, encoder_final_states = Seq2SeqRnn(s2s_src_input,
+      encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
                                                        self.num_cells,
                                                        self.num_layers,
                                                        use_lstm=config.use_lstm,
                                                        use_birnn=config.use_birnn,
                                                        seq_lengths=src_length,
-                                                       init_state=None,
+                                                       init_state=encoder_init_state,
                                                          scope=varscope,
                                                        keep_rate=1.0 if not is_training else config.keep_rate)
+
     if config.use_birnn:
-      decoder_init_state, _ = encoder_final_states
+      decoder_init_state, _ = encoder_final_state
     else:
-      decoder_init_state = encoder_final_states
+      decoder_init_state = encoder_final_state
 
     with vs.variable_scope("decoder") as varscope:
-      decoder_outputs, decoder_final_states = Seq2SeqRnn(s2s_tgt_input,
+      decoder_outputs, decoder_final_state = Seq2SeqRnn(s2s_tgt_input,
                                                          self.num_cells,
                                                          self.num_layers,
                                                          use_lstm=config.use_lstm,
@@ -339,7 +322,8 @@ class TranslationModel(object):
                                                          scope=varscope,
                                                          keep_rate=1.0 if not is_training else config.keep_rate)
 
-
+    src_values = None
+    attentions = None
     if FLAGS.attention_type == 1:
       src_values, s2s_outputs, attentions = GlobalAttention(self.batch_size,
                                                           self.num_cells * 2 if config.use_birnn else self.num_cells,
@@ -358,11 +342,11 @@ class TranslationModel(object):
 
 
     with vs.variable_scope("output"):
-      tgt_gen_cell = _create_rnn_multi_cell(config.use_lstm, config.embed_size, config.num_layers,
+      tgt_gen_cell = _create_rnn_multi_cell(config.use_lstm, self.num_cells, self.num_layers,
                                           keep_rate=1.0 if not is_training else config.keep_rate)
-
-      tgt_gen_outputs, _ = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
-                                           initial_state=None, dtype=self.dtype, time_major=False)
+      tgt_gen_init_state = None
+      tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
+                                           initial_state=tgt_gen_init_state, dtype=self.dtype, time_major=False)
       output = tf.reshape(tgt_gen_outputs, [-1, self.num_cells])
       softmax_w = tf.get_variable("softmax_w", [self.num_cells, self.target_voc_size], dtype=self.dtype)
       softmax_b = tf.get_variable("softmax_b", [self.target_voc_size], dtype=self.dtype)
@@ -379,6 +363,19 @@ class TranslationModel(object):
     self.global_step = tf.Variable(0, trainable=False)
     self.is_training = is_training
     self._accuracy = tf.no_op()
+    self.dict = dict(
+      source_input = self._source_input,
+      target_input =self._target_input,
+      encoder_init_state = encoder_init_state,
+      encoder_final_state = encoder_final_state,
+      encoder_cached_value = src_values,
+      encoder_attention = attentions,
+      decoder_init_state = decoder_init_state,
+      decoder_final_state = decoder_final_state,
+      tgt_gen_init_state = tgt_gen_init_state,
+      tgt_gen_final_state = tgt_gen_final_state,
+      target_output = logits,
+    )
 
     if not is_training:
       self._accuracy = tf.reduce_sum(tf.cast(tf.equal(tgt_output, tf.cast(tf.argmax(logits, 1), tf.int32)), tf.float32) * tgt_weight)
