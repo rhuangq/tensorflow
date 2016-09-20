@@ -29,14 +29,15 @@ _EOS_ID = 2
 logging = tf.logging
 
 #scheduling
-tf.app.flags.DEFINE_float("learning_rate", 0.5, "initial learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.8,
+tf.app.flags.DEFINE_float("initial_learning_rate", 0.5, "initial learning rate.")
+tf.app.flags.DEFINE_float("learning_rate_decay", 0.8,
                           "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("min_learn_rate", 0.05, "when the learning rate is reduced to this, stop training")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0,
                           "Clip gradients to this norm.")
 tf.app.flags.DEFINE_integer("batch_size", 64,
                             "Batch size to use during training.")
+tf.app.flags.DEFINE_integer("max_length", 32, "the maximum sequence length, longer sequence will be discarded")
 tf.app.flags.DEFINE_integer("max_train_data_size", 0,
                             "Limit on the size of training data (0: no limit).")
 tf.app.flags.DEFINE_integer("spot_check_iters", 200,
@@ -46,12 +47,13 @@ tf.app.flags.DEFINE_integer("max_iters", 300000, "maximum number of model update
 tf.app.flags.DEFINE_integer("random_seed", 5789, "the random seed for repeatable experiments")
 
 #models
-tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")
 tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("src_vocab_size", 30000, "source vocabulary size.")
-tf.app.flags.DEFINE_integer("tgt_vocab_size", 30000, "target vocabulary size.")
+tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
+tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
 tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
+tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
 tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
 
@@ -70,6 +72,7 @@ tf.app.flags.DEFINE_boolean("use_fp16", False,
 tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
 tf.app.flags.DEFINE_boolean("log_device", False, "Set to True to log computation device placement")
 tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
+tf.app.flags.DEFINE_boolean("save_eval_graph", True, "save the inference graph")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -242,117 +245,178 @@ def GlobalAttention(
     return src_values, tf.reshape(outputs, [batch_size, -1, out_dim]), context_weights
 
 
-class MTconfig(object):
-  #TODO: generate this from the command line configs
-  batch_size = 64
-  embed_size = 128
-  num_layers = 2
-  use_lstm = True
-  use_birnn = True
-  source_voc_size = 74
-  target_voc_size = 54
-  initial_weight = 0.1
-  initial_learning_rate = 0.5
-  learning_rate_decay = 0.8
-  keep_rate = 1.0
-  dtype = tf.float32
-  max_length = 32
-  max_grad_norm = 5.0
-  filler = _EOS_ID
+class MTconfig(dict):
+  #TODO: is there an easier way to sync this with FLAGS?
+  def __init__(self):
+    self.batch_size = 64
+    self.embed_size = 128
+    self.num_layers = 3
+    self.use_lstm = True
+    self.use_birnn = False
+    self.source_vocab_size = 100
+    self.target_vocab_size = 100
+    self.initial_weight = 0.1
+    self.initial_learning_rate = 0.5
+    self.learning_rate_decay = 0.8
+    self.keep_rate = 1.0
+    self.dtype = tf.float32
+    self.max_length = 32
+    self.max_grad_norm = 5.0
+    self.filler = _EOS_ID
+
+    # enum is only available in python3, otherwise it should be used here.
+    # 0: training; 1: evaluation; 2: inference
+    self.mode = 0
+    # 0: simple encoder-decoder; 1: global attention; 2: recurrent global attention
+    self.attention_type = 0
+    self['batch_size'] = self.batch_size
+    self['embed_size'] = self.embed_size
+    self['num_layers'] = self.num_layers
+    self['use_lstm'] = self.use_lstm
+    self['use_birnn'] = self.use_birnn
+    self['source_vocab_size'] = self.source_vocab_size
+    self['target_vocab_size'] = self.target_vocab_size
+    self['initial_weight']  = self.initial_weight
+    self['initial_learning_rate'] = self.initial_learning_rate
+    self['learning_rate_decay'] = self.learning_rate_decay
+    self['keep_rate'] = self.keep_rate
+    self['dtype'] = self.dtype
+    self['max_length'] = self.max_length
+    self['max_grad_norm'] = self.max_grad_norm
+    self['filler'] = self.filler
+
+  def __getattr__(self, item):
+    if item in self:
+      return self[item]
+    else:
+      raise AttributeError("no such attribute " + item)
+
+  def __setattr__(self, key, value):
+    self[key] = value
 
 
+def create_nmt_graph(config):
+  batch_size = config.batch_size
+  filler = config.filler
+  source_vocab_size = config.source_vocab_size
+  target_vocab_size = config.target_vocab_size
+  num_cells = config.embed_size
+  num_layers = config.num_layers
+  dtype = config.dtype
+  max_length = config.max_length
+  use_lstm = config.use_lstm
+  use_birnn = config.use_birnn
+  keep_rate = config.keep_rate
+  mode = config.mode
+  attention_type = config.attention_type
+
+  source_input = tf.placeholder(tf.int32, [batch_size, None], name="source_input")
+  target_input = tf.placeholder(tf.int32, [batch_size, None], name="target_input")
+
+  # TODO: move embedding to CPU?
+  with vs.variable_scope("input"):
+    src_embedding = tf.get_variable("source_embedding", [source_vocab_size, num_cells], dtype=dtype)
+    tgt_embedding = tf.get_variable("target_embedding", [target_vocab_size, num_cells], dtype=dtype)
+  s2s_src_input = tf.nn.embedding_lookup(src_embedding, source_input)
+  s2s_tgt_input = tf.nn.embedding_lookup(tgt_embedding, target_input)
+
+  seq_length_op = SequenceLength(batch_size, max_length, filler)
+  src_length = seq_length_op.get_length(source_input)
+  tgt_length = seq_length_op.get_length(target_input)
+
+  encoder_init_state = None
+
+  with vs.variable_scope("encoder") as varscope:
+    encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
+                                                      num_cells,
+                                                      num_layers,
+                                                      use_lstm=use_lstm,
+                                                      use_birnn=use_birnn,
+                                                      seq_lengths=src_length,
+                                                      init_state=encoder_init_state,
+                                                      scope=varscope,
+                                                      keep_rate=1.0 if mode != 0 else keep_rate)
+
+  if use_birnn:
+    decoder_init_state, _ = encoder_final_state
+  else:
+    decoder_init_state = encoder_final_state
+
+  with vs.variable_scope("decoder") as varscope:
+    decoder_outputs, decoder_final_state = Seq2SeqRnn(s2s_tgt_input,
+                                                      num_cells,
+                                                      num_layers,
+                                                      use_lstm=use_lstm,
+                                                      use_birnn=False,
+                                                      seq_lengths=tgt_length,
+                                                      init_state=decoder_init_state,
+                                                      scope=varscope,
+                                                      keep_rate=1.0 if mode != 0 else keep_rate)
+
+  src_values = None
+  attentions = None
+  if attention_type == 1:
+    src_values, s2s_outputs, attentions = GlobalAttention(batch_size,
+                                                          num_cells * 2 if use_birnn else num_cells,
+                                                          num_cells,
+                                                          encoder_outputs,
+                                                          decoder_outputs,
+                                                          num_cells,
+                                                          src_length,
+                                                          tgt_length,
+                                                          src_values=src_values,
+                                                          dot_dim=num_cells)
+  elif attention_type == 0:
+    s2s_outputs = decoder_outputs
+  else:
+    raise ValueError("attention type %d is not implemented yet" % (attention_type))
+
+  with vs.variable_scope("output"):
+    tgt_gen_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers,
+                                          keep_rate=1.0 if mode != 0 else config.keep_rate)
+    tgt_gen_init_state = None
+    tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
+                                                             initial_state=tgt_gen_init_state, dtype=dtype,
+                                                             time_major=False)
+    output = tf.reshape(tgt_gen_outputs, [-1, num_cells])
+    softmax_w = tf.get_variable("softmax_w", [num_cells, target_vocab_size], dtype=dtype)
+    softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
+    logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="prediction")
+
+  return dict(
+    source_input=source_input,
+    target_input=target_input,
+    seq_length_op=seq_length_op,
+    encoder_init_state=encoder_init_state,
+    encoder_final_state=encoder_final_state,
+    encoder_cached_value=src_values,
+    encoder_attention=attentions,
+    decoder_init_state=decoder_init_state,
+    decoder_final_state=decoder_final_state,
+    tgt_gen_init_state=tgt_gen_init_state,
+    tgt_gen_final_state=tgt_gen_final_state,
+    logits=logits,
+  )
 
 
 class TranslationModel(object):
   """The NMT model"""
 
-  def __init__(self, is_training, config):
+  def __init__(self, config):
     self.batch_size = config.batch_size
-    self.num_cells = config.embed_size
-    self.num_layers = config.num_layers
-    self.source_voc_size = config.source_voc_size
-    self.target_voc_size = config.target_voc_size
-    self.dtype = config.dtype
-    self.dict = {}
+    self.target_vocab_size = config.target_vocab_size
+    dtype = config.dtype
+    self.graph = create_nmt_graph(config)
+    is_training = True if config.mode == 0 else False
+    self.source_input = self.graph['source_input']
+    self.target_input = self.graph['target_input']
+    seq_length_op = self.graph['seq_length_op']
+    logits = self.graph['logits']
 
-    if FLAGS.attention_type == 0: config.use_birnn = False
+    pad_batch = tf.constant(config.filler, tf.int32, [self.batch_size, 1])
+    target_output = tf.concat(1, [tf.slice(self.target_input, [0, 1], [-1, -1]), pad_batch])
 
-    self._source_input = tf.placeholder(tf.int32, [self.batch_size, None], name="source_input")
-    self._target_input = tf.placeholder(tf.int32, [self.batch_size, None], name="target_input")
-    pad_batch = tf.constant(_EOS_ID, tf.int32, [self.batch_size, 1])
-    target_output = tf.concat(1, [tf.slice(self._target_input, [0, 1], [-1, -1]), pad_batch])
-
-    #TODO: move embedding to CPU?
-    with vs.variable_scope("input"):
-      src_embedding = tf.get_variable("source_embedding", [self.source_voc_size, self.num_cells], dtype=self.dtype)
-      tgt_embedding = tf.get_variable("target_embedding", [self.target_voc_size, self.num_cells], dtype=self.dtype)
-    s2s_src_input = tf.nn.embedding_lookup(src_embedding, self._source_input)
-    s2s_tgt_input = tf.nn.embedding_lookup(tgt_embedding, self._target_input)
-
-    seq_length_op = SequenceLength(self.batch_size, config.max_length, config.filler)
-    src_length = seq_length_op.get_length(self._source_input)
-    tgt_length = seq_length_op.get_length(self._target_input)
-
-    encoder_init_state = None
-
-    with vs.variable_scope("encoder") as varscope:
-      encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
-                                                       self.num_cells,
-                                                       self.num_layers,
-                                                       use_lstm=config.use_lstm,
-                                                       use_birnn=config.use_birnn,
-                                                       seq_lengths=src_length,
-                                                       init_state=encoder_init_state,
-                                                         scope=varscope,
-                                                       keep_rate=1.0 if not is_training else config.keep_rate)
-
-    if config.use_birnn:
-      decoder_init_state, _ = encoder_final_state
-    else:
-      decoder_init_state = encoder_final_state
-
-    with vs.variable_scope("decoder") as varscope:
-      decoder_outputs, decoder_final_state = Seq2SeqRnn(s2s_tgt_input,
-                                                         self.num_cells,
-                                                         self.num_layers,
-                                                         use_lstm=config.use_lstm,
-                                                         use_birnn=False,
-                                                         seq_lengths=tgt_length,
-                                                         init_state=decoder_init_state,
-                                                         scope=varscope,
-                                                         keep_rate=1.0 if not is_training else config.keep_rate)
-
-    src_values = None
-    attentions = None
-    if FLAGS.attention_type == 1:
-      src_values, s2s_outputs, attentions = GlobalAttention(self.batch_size,
-                                                          self.num_cells * 2 if config.use_birnn else self.num_cells,
-                                                          self.num_cells,
-                                                          encoder_outputs,
-                                              decoder_outputs,
-                                              self.num_cells,
-                                              src_length,
-                                              tgt_length,
-                                              src_values=None,
-                                              dot_dim=self.num_cells)
-    elif FLAGS.attention_type == 0:
-      s2s_outputs = decoder_outputs
-    else:
-      raise ValueError("attention type %d is not implemented yet" %(FLAGS.attention_type))
-
-
-    with vs.variable_scope("output"):
-      tgt_gen_cell = _create_rnn_multi_cell(config.use_lstm, self.num_cells, self.num_layers,
-                                          keep_rate=1.0 if not is_training else config.keep_rate)
-      tgt_gen_init_state = None
-      tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
-                                           initial_state=tgt_gen_init_state, dtype=self.dtype, time_major=False)
-      output = tf.reshape(tgt_gen_outputs, [-1, self.num_cells])
-      softmax_w = tf.get_variable("softmax_w", [self.num_cells, self.target_voc_size], dtype=self.dtype)
-      softmax_b = tf.get_variable("softmax_b", [self.target_voc_size], dtype=self.dtype)
-      logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="prediction")
-
-    tgt_weight = tf.reshape(seq_length_op.get_weight(self._target_input), [-1])
+    tgt_weight = tf.reshape(seq_length_op.get_weight(self.target_input), [-1])
     tgt_output = tf.reshape(target_output, [-1])
     cross_entropy = nn_ops.sparse_softmax_cross_entropy_with_logits(logits, tgt_output) * tgt_weight
     self._batch_weight = tf.reduce_sum(tgt_weight)
@@ -363,19 +427,6 @@ class TranslationModel(object):
     self.global_step = tf.Variable(0, trainable=False)
     self.is_training = is_training
     self._accuracy = tf.no_op()
-    self.dict = dict(
-      source_input = self._source_input,
-      target_input =self._target_input,
-      encoder_init_state = encoder_init_state,
-      encoder_final_state = encoder_final_state,
-      encoder_cached_value = src_values,
-      encoder_attention = attentions,
-      decoder_init_state = decoder_init_state,
-      decoder_final_state = decoder_final_state,
-      tgt_gen_init_state = tgt_gen_init_state,
-      tgt_gen_final_state = tgt_gen_final_state,
-      target_output = logits,
-    )
 
     if not is_training:
       self._accuracy = tf.reduce_sum(tf.cast(tf.equal(tgt_output, tf.cast(tf.argmax(logits, 1), tf.int32)), tf.float32) * tgt_weight)
@@ -383,7 +434,7 @@ class TranslationModel(object):
       return
 
     self.learning_rate = tf.Variable(
-      config.initial_learning_rate, trainable=False, dtype=self.dtype)
+      config.initial_learning_rate, trainable=False, dtype=dtype)
     self._learning_rate_decay_op = self.learning_rate.assign(
       self.learning_rate * config.learning_rate_decay)
 
@@ -399,8 +450,8 @@ class TranslationModel(object):
       raise ValueError("the input source/target data has batch size %d, %d, which is not the expected %d batch size" %(len(source_input), len(target_input), self.batch_size))
 
     feed_dict = {}
-    feed_dict[self._source_input] = source_input
-    feed_dict[self._target_input] = target_input
+    feed_dict[self.source_input] = source_input
+    feed_dict[self.target_input] = target_input
     cost, weight, accuracy, _ = session.run([self._cost,
                                              self._batch_weight,
                                              self._accuracy,
@@ -417,7 +468,7 @@ class TranslationModel(object):
       ppl = np.exp(self.total_cost * 1.0 / self.total_weight)
       error = 100.0 - self.total_accuracy * 100.0 / self.total_weight
     else:
-      ppl = self.target_voc_size
+      ppl = self.target_vocab_size
       error = 100.0
 
     return iters, ppl, error
@@ -501,8 +552,8 @@ def examine_model(params):
 
   print("Number of parameters: %d" %total)
 
-def restore_model(saver, session):
-  ckpt = tf.train.get_checkpoint_state(FLAGS.output_dir)
+def restore_model(saver, session, outdir):
+  ckpt = tf.train.get_checkpoint_state(outdir)
   if ckpt and tf.gfile.Exists(ckpt.model_checkpoint_path):
     print("Reading model parameters from %s" % ckpt.model_checkpoint_path)
     saver.restore(session, ckpt.model_checkpoint_path)
@@ -560,15 +611,24 @@ def self_test():
   pass
 
 
+def create_MTconfig():
+  orig = MTconfig()
+  for k, v in FLAGS.__dict__['__flags'].items():
+    if k in orig:
+      orig[k] = v
+
+  return orig
+
 
 def train():
   """run model training"""
 
-  trn_config = MTconfig()
+  trn_config = create_MTconfig()
   if trn_config.max_length < _buckets[-1][0] or trn_config.max_length < _buckets[-1][1]:
     raise ValueError("the maximum sequence must no less than the possible bucket size")
 
-  dev_config = MTconfig()
+  dev_config = create_MTconfig()
+  dev_config.mode = 1
   np.random.seed(FLAGS.random_seed)
   import os
   src_train = os.path.join(FLAGS.data_dir, "source.train")
@@ -583,13 +643,13 @@ def train():
                                         log_device_placement=FLAGS.log_device)) as session:
     initializer = tf.random_uniform_initializer(-trn_config.initial_weight, trn_config.initial_weight, seed=FLAGS.random_seed)
     with tf.variable_scope("TranslationModel", reuse=None, initializer=initializer):
-      trn_model = TranslationModel(True, trn_config)
+      trn_model = TranslationModel(trn_config)
       examine_model(tf.trainable_variables())
     with tf.variable_scope("TranslationModel", reuse=True, initializer=initializer):
-      dev_model = TranslationModel(False, dev_config)
+      dev_model = TranslationModel(dev_config)
 
     saver = tf.train.Saver(tf.all_variables(), max_to_keep=0)
-    restore_model(saver, session)
+    restore_model(saver, session, FLAGS.output_dir)
     tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
 
     train_set = read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
@@ -634,12 +694,13 @@ def train():
         checkpoint_path = os.path.join(FLAGS.output_dir, "nmt.ckpt")
         saver.save(session, checkpoint_path, global_step=iters)
 
-
       if iters > FLAGS.max_iters: break
 
       src_input, tgt_input = get_minibatch(trn_config.batch_size, train_set, train_buckets_scale)
       trn_model.run_minibatch(session, src_input, tgt_input)
 
+def create_eval_graph():
+  pass
 
 def main(_):
   if FLAGS.self_test:
@@ -648,6 +709,9 @@ def main(_):
     decode()
   else:
     train()
+
+  if FLAGS.save_eval_graph:
+    create_eval_graph()
 
 if __name__ == "__main__":
   tf.app.run()
