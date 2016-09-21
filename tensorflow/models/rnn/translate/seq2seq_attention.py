@@ -24,57 +24,6 @@ _BOS_ID = data_utils_qnn._BOS_ID
 _UNK_ID = data_utils_qnn._UNK_ID
 
 
-logging = tf.logging
-
-#scheduling
-tf.app.flags.DEFINE_float("initial_learning_rate", 0.5, "initial learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay", 0.8,
-                          "Learning rate decays by this much.")
-tf.app.flags.DEFINE_float("min_learn_rate", 0.05, "when the learning rate is reduced to this, stop training")
-tf.app.flags.DEFINE_float("max_gradient_norm", 5.0,
-                          "Clip gradients to this norm.")
-tf.app.flags.DEFINE_integer("batch_size", 64,
-                            "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("max_length", 32, "the maximum sequence length, longer sequence will be discarded")
-tf.app.flags.DEFINE_integer("max_train_data_size", 0,
-                            "Limit on the size of training data (0: no limit).")
-tf.app.flags.DEFINE_integer("spot_check_iters", 200,
-                            "How many training iters/steps to do per checkpoint.")
-tf.app.flags.DEFINE_integer("check_iters", 10000, "do the validation for every this amount of model update")
-tf.app.flags.DEFINE_integer("max_iters", 300000, "maximum number of model updates")
-tf.app.flags.DEFINE_integer("random_seed", 5789, "the random seed for repeatable experiments")
-
-#models
-tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")
-tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
-tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
-tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
-tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
-tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
-tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
-tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
-
-#data
-tf.app.flags.DEFINE_string("data_dir", "data", "Data directory, assume {source|target}.{train|valid|vocab} files (generated in the QNN setup)")
-tf.app.flags.DEFINE_string("output_dir", "output", "Training directory.")
-
-tf.app.flags.DEFINE_boolean("decode", False,
-                            "Set to True for interactive decoding.")
-tf.app.flags.DEFINE_boolean("self_test", False,
-                            "Run a self-test if this is set to True.")
-tf.app.flags.DEFINE_boolean("use_fp16", False,
-                            "Train using fp16 instead of fp32.")
-
-#multi-device computation, logging
-tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
-tf.app.flags.DEFINE_boolean("log_device", False, "Set to True to log computation device placement")
-tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
-tf.app.flags.DEFINE_string("eval_graph", None, "the inference graph base name")
-
-FLAGS = tf.app.flags.FLAGS
-
-
 def _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate):
   """a helper function creates multi-layer RNNs"""
 
@@ -604,15 +553,7 @@ def get_minibatch_dev(batch_size, data):
 
     yield src_inputs,tgt_inputs
 
-
-def decode():
-  pass
-
-def self_test():
-  pass
-
-
-def create_model_config():
+def create_model_config(FLAGS):
   orig = ModelConfig()
   for k, v in FLAGS.__dict__['__flags'].items():
     if k in orig:
@@ -621,14 +562,14 @@ def create_model_config():
   return orig
 
 
-def train():
+def train(FLAGS):
   """run model training"""
 
-  trn_config = create_model_config()
+  trn_config = create_model_config(FLAGS)
   if trn_config.max_length < _buckets[-1][0] or trn_config.max_length < _buckets[-1][1]:
     raise ValueError("the maximum sequence must no less than the possible bucket size")
 
-  dev_config = create_model_config()
+  dev_config = create_model_config(FLAGS)
   dev_config.mode = 1
   np.random.seed(FLAGS.random_seed)
   src_train = os.path.join(FLAGS.data_dir, "source.train")
@@ -727,24 +668,72 @@ def create_eval_graph(ckpt, config, out_graph_file):
     f.write(output_graph_def.SerializeToString())
   print("%d ops in the final graph." % len(output_graph_def.node))
 
-def main(_):
-  if FLAGS.self_test:
-    self_test()
-  elif FLAGS.decode:
-    decode()
-  else:
-    graph_def_file, _, best_ckpt = train()
-    if FLAGS.eval_graph:
-      config = create_model_config()
-      config.mode = 2
-      out_file = os.path.join(FLAGS.output_dir, FLAGS.eval_graph)
-      create_eval_graph(best_ckpt, config, out_file)
 
-if __name__ == "__main__":
-  tf.app.run()
+
+def read_eval_data(source_path, vocab, reverse = True):
+  """read eval data, numericized it, reverse it, ..."""
+  data_set = []
+  word2id, _ = vocab
+  for line in open(source_path):
+    ids = [word2id[w] for w in line.split()]
+    if reverse: ids.reverse()
+    ids.insert(0, _BOS_ID)
+    data_set.append(ids)
+
+  return data_set
 
 
 
+def load_eval_graph(graph_file, config):
+  config.mode = 2
+  #TODO: change it for beam decoding?
+  config.batch_size = 1
+  graph_def = tf.GraphDef()
+  with open(graph_file, "rb") as f:
+    graph_def.ParseFromString(f.read())
+  tf.import_graph_def(graph_def, name="")
+  with tf.variable_scope("TranslationModel"):
+    model_graph = create_nmt_graph(config)
+
+  return model_graph
+
+def read_qnn_vocab(vocab_file):
+  word2id = {}
+  id2word = {}
+  voc_size = None
+  idx = -1
+  unk, bos, eos, unk_id, bos_id, eos_id = None, None, None, None, None, None
+  for line in open(vocab_file):
+    if not voc_size:
+      assert line.startswith("<VocabSize>")
+      _, voc_size = line.split()
+      voc_size = int(voc_size)
+    else:
+      word,prob = line.split()
+      try:
+        _ = float(prob)
+        idx += 1
+        word2id[word] = idx
+        id2word[idx] = word
+      except:
+        if word == "<UnknownWord>": unk = prob
+        elif word == "<BeginOfSentenceWord>": bos = prob
+        elif word == "<EndOfSentenceWord>": eos = prob
+        else:
+          raise RuntimeError("cannot parse string %s in the vocab file %s" %(word, vocab_file))
+
+  if idx+1 != voc_size:
+    raise RuntimeError("vocab file %s says it has %d words, but only read %d" %(vocab_file, voc_size, idx+1))
+
+  unk_id = word2id[unk]
+  bos_id = word2id[bos]
+  eos_id = word2id[eos]
+
+  if unk_id != _UNK_ID: raise RuntimeError("unkown ID mismatch in the vocab file: %d vs %d" %(unk_id, _UNK_ID))
+  if bos_id != _BOS_ID: raise RuntimeError("BOS ID mismatch in the vocab file: %d vs %d" % (bos_id, _BOS_ID))
+  if eos_id != _EOS_ID: raise RuntimeError("EOS ID mismatch in the vocab file: %d vs %d" % (eos_id, _EOS_ID))
+
+  return (word2id, id2word)
 
 
 
