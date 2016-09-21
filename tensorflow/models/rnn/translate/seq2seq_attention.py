@@ -7,6 +7,7 @@ from __future__ import print_function
 import random
 
 import sys
+import os
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
@@ -15,16 +16,13 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
-#from tensorflow.models.rnn.translate import data_utils_qnn
-#_buckets = data_utils_qnn._buckets
-#_EOS_ID = data_utils_qnn._EOS_ID
-#_BOS_ID = data_utils_qnn._BOS_ID
-#_UNK_ID = data_utils_qnn._UNK_ID
+#TODO: bazel it so others can import it
+import data_utils_qnn
+_buckets = data_utils_qnn._buckets
+_EOS_ID = data_utils_qnn._EOS_ID
+_BOS_ID = data_utils_qnn._BOS_ID
+_UNK_ID = data_utils_qnn._UNK_ID
 
-_buckets = [(5, 5), (7, 7), (9, 9), (11, 11), (15, 15), (20, 20), (32, 32)]
-_UNK_ID = 0
-_BOS_ID = 1
-_EOS_ID = 2
 
 logging = tf.logging
 
@@ -72,7 +70,7 @@ tf.app.flags.DEFINE_boolean("use_fp16", False,
 tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
 tf.app.flags.DEFINE_boolean("log_device", False, "Set to True to log computation device placement")
 tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
-tf.app.flags.DEFINE_boolean("save_eval_graph", True, "save the inference graph")
+tf.app.flags.DEFINE_string("eval_graph", None, "the inference graph base name")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -245,7 +243,7 @@ def GlobalAttention(
     return src_values, tf.reshape(outputs, [batch_size, -1, out_dim]), context_weights
 
 
-class MTconfig(dict):
+class ModelConfig(dict):
   #TODO: is there an easier way to sync this with FLAGS?
   def __init__(self):
     self.batch_size = 64
@@ -527,13 +525,16 @@ def read_train_data(source_path, target_path, max_size=None):
 def read_dev_data(source_path, target_path, max_len=1000):
   """read development data (usually pretty small)"""
   data_set = []
+  max_src_len, max_tgt_len = _buckets[-1]
+  max_len = max(max_src_len, max_tgt_len, max_len)
   with tf.gfile.GFile(source_path, mode="r") as source_file:
     with tf.gfile.GFile(target_path, mode="r") as target_file:
       source, target = source_file.readline(), target_file.readline()
       while source and target:
         source_ids = [int(x) for x in source.split()]
         target_ids = [int(x) for x in target.split()]
-        data_set.append([source_ids, target_ids])
+        if len(source_ids) <= max_src_len and len(target_ids) <= max_tgt_len:
+          data_set.append([source_ids, target_ids])
         source, target = source_file.readline(), target_file.readline()
 
   #sort the data by length, by target and source
@@ -611,8 +612,8 @@ def self_test():
   pass
 
 
-def create_MTconfig():
-  orig = MTconfig()
+def create_model_config():
+  orig = ModelConfig()
   for k, v in FLAGS.__dict__['__flags'].items():
     if k in orig:
       orig[k] = v
@@ -623,14 +624,13 @@ def create_MTconfig():
 def train():
   """run model training"""
 
-  trn_config = create_MTconfig()
+  trn_config = create_model_config()
   if trn_config.max_length < _buckets[-1][0] or trn_config.max_length < _buckets[-1][1]:
     raise ValueError("the maximum sequence must no less than the possible bucket size")
 
-  dev_config = create_MTconfig()
+  dev_config = create_model_config()
   dev_config.mode = 1
   np.random.seed(FLAGS.random_seed)
-  import os
   src_train = os.path.join(FLAGS.data_dir, "source.train")
   tgt_train = os.path.join(FLAGS.data_dir, "target.train")
   src_dev = os.path.join(FLAGS.data_dir, "source.valid")
@@ -651,6 +651,7 @@ def train():
     saver = tf.train.Saver(tf.all_variables(), max_to_keep=0)
     restore_model(saver, session, FLAGS.output_dir)
     tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
+    graph_def_file = os.path.join(FLAGS.output_dir, "nmt.pb")
 
     train_set = read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
     train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
@@ -674,6 +675,8 @@ def train():
       summary_writer = None
 
     dev_losses = []
+    best_ckpt = None
+    best_loss = None
     while True:
       iters = trn_model.global_step.eval(session)
       if iters % FLAGS.spot_check_iters == 0:
@@ -690,17 +693,39 @@ def train():
         dev_model.reset_stats()
         if len(dev_losses) > 1 and (dev_losses[-1] - dev_loss) / dev_losses[-1] < 0.01:
           print("The learning rate is reduced to %f" %(trn_model.reduce_learning_rate(session)))
+
         dev_losses.append(dev_loss)
         checkpoint_path = os.path.join(FLAGS.output_dir, "nmt.ckpt")
-        saver.save(session, checkpoint_path, global_step=iters)
+        curr_ckpt = saver.save(session, checkpoint_path, global_step=iters)
+        if not best_loss or best_loss > dev_loss:
+          best_loss = dev_loss
+          best_ckpt = curr_ckpt
 
       if iters > FLAGS.max_iters: break
 
       src_input, tgt_input = get_minibatch(trn_config.batch_size, train_set, train_buckets_scale)
       trn_model.run_minibatch(session, src_input, tgt_input)
 
-def create_eval_graph():
-  pass
+  print("the best performing model is "+best_ckpt)
+  return graph_def_file, best_loss, best_ckpt
+
+def create_eval_graph(ckpt, config, out_graph_file):
+  from tensorflow.python.framework import graph_util
+  with tf.Graph().as_default() as graph, tf.Session() as session:
+    with tf.variable_scope("TranslationModel"):
+      model_graph = create_nmt_graph(config)
+
+    output_node_names = ['TranslationModel/output/prediction']
+    saver = tf.train.Saver(tf.trainable_variables())
+    saver.restore(session, ckpt)
+    graph_def = session.graph.as_graph_def()
+    for node in graph_def.node: node.device = ""
+    output_graph_def = graph_util.convert_variables_to_constants(
+      session, graph_def, output_node_names)
+
+  with tf.gfile.GFile(out_graph_file, "wb") as f:
+    f.write(output_graph_def.SerializeToString())
+  print("%d ops in the final graph." % len(output_graph_def.node))
 
 def main(_):
   if FLAGS.self_test:
@@ -708,10 +733,12 @@ def main(_):
   elif FLAGS.decode:
     decode()
   else:
-    train()
-
-  if FLAGS.save_eval_graph:
-    create_eval_graph()
+    graph_def_file, _, best_ckpt = train()
+    if FLAGS.eval_graph:
+      config = create_model_config()
+      config.mode = 2
+      out_file = os.path.join(FLAGS.output_dir, FLAGS.eval_graph)
+      create_eval_graph(best_ckpt, config, out_file)
 
 if __name__ == "__main__":
   tf.app.run()
