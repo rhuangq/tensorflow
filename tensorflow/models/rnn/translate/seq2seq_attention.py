@@ -95,15 +95,13 @@ def Seq2SeqRnn(
       else:
         init_state_forward = init_state
 
-    with vs.variable_scope("forward"):
-      forward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-      if init_state_forward is None:
-        init_state_forward = forward_cell.zero_state(batch_size, dtype)
+    forward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+    if init_state_forward is None:
+      init_state_forward = forward_cell.zero_state(batch_size, dtype)
     if use_birnn:
-      with vs.variable_scope("backward"):
-        backward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-        if init_state_backward is None:
-          init_state_backward = backward_cell.zero_state(batch_size, dtype)
+      backward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      if init_state_backward is None:
+        init_state_backward = backward_cell.zero_state(batch_size, dtype)
       outputs, final_state = tf.nn.bidirectional_dynamic_rnn(forward_cell, backward_cell,
                                                              inputs, tf.cast(seq_lengths, tf.int64),
                                                              initial_state_fw=init_state_forward,
@@ -121,48 +119,44 @@ def GlobalAttention(
     src_dim,
     tgt_dim,
     source_inputs,
-               target_inputs,
-               out_dim,
-                src_seq_lengths,
-               tgt_seq_lengths,
-    src_values=None,
-    dot_dim=None,
-               initializer=None,
-               scope=None,
-               dtype=tf.float32):
+    target_inputs,
+    out_dim,
+    src_seq_lengths,
+    tgt_seq_lengths,
+    src_values,
+    dot_dim,
+    single_step=False,
+    initializer=None,
+    scope=None,
+    dtype=tf.float32):
   """
   Compute the attention vector by looking at the whole source sequence and current step in target.
    This function can be used in batch or called per step.
   """
 
-  if dot_dim is None: dot_dim = out_dim
   with vs.variable_scope(scope or "GlobalAttention", initializer=initializer):
     bs, _, sd = source_inputs.get_shape()
     if bs != batch_size or sd != src_dim:
       raise ValueError("source data dimension mismatch, batch_size expected %d vs actual %d, dimention expected %d vs actual %d"
                        %(batch_size, bs, src_dim, sd))
 
-    bs, _, sd = target_inputs.get_shape()
+    if not single_step:
+      bs, _, sd = target_inputs.get_shape()
+    else:
+      bs, sd = target_inputs.get_shape()
+
     if bs != batch_size or sd != tgt_dim:
       raise ValueError("target data dimension mismatch, batch_size expected %d vs actual %d, dimention expected %d vs actual %d"
                        %(batch_size, bs, tgt_dim, sd))
 
-    src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
-    src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
-    src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, out_dim], dtype=dtype)
-    src_add_trans_b = tf.get_variable("src_add_trans_b", [out_dim], dtype=dtype)
+
+
     tgt_dot_trans_w = tf.get_variable("tgt_dot_trans_w", [tgt_dim, dot_dim], dtype=dtype)
     tgt_dot_trans_b = tf.get_variable("tgt_dot_trans_b", [dot_dim], dtype=dtype)
     tgt_add_trans_w = tf.get_variable("tgt_add_trans_w", [tgt_dim, out_dim], dtype=dtype)
     tgt_add_trans_b = tf.get_variable("tgt_add_trans_b", [out_dim], dtype=dtype)
 
-    if src_values is None:
-      src_input_rs = tf.reshape(source_inputs, [-1, src_dim])
-      src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b), [batch_size, -1, dot_dim])
-      src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b), [batch_size, -1, out_dim])
-      src_values = (src_dot_values, src_add_values)
-    else:
-      src_dot_values, src_add_values = src_values
+    src_dot_values, src_add_values = src_values
 
     tgt_input_rs = tf.reshape(target_inputs, [-1, tgt_dim])
     tgt_dot_values = tf.reshape(tf.add(tf.matmul(tgt_input_rs, tgt_dot_trans_w), tgt_dot_trans_b),
@@ -170,26 +164,41 @@ def GlobalAttention(
     tgt_add_values = tf.reshape(tf.add(tf.matmul(tgt_input_rs, tgt_add_trans_w), tgt_add_trans_b),
                                 [batch_size, -1, out_dim])
 
-    context_weights = []
-    out_padding = tf.zeros([tf.shape(target_inputs)[1], out_dim])
+    if not single_step:
+      out_padding = tf.zeros([tf.shape(target_inputs)[1], out_dim])
     outputs = None
     weights = []
     for batch_idx in xrange(batch_size):
       #extract one sequence
       src_dot_value = tf.squeeze(tf.slice(src_dot_values, [batch_idx, 0, 0], [1, src_seq_lengths[batch_idx], -1]), [0])
       src_add_value = tf.squeeze(tf.slice(src_add_values, [batch_idx, 0, 0], [1, src_seq_lengths[batch_idx], -1]), [0])
-      tgt_dot_value = tf.squeeze(tf.slice(tgt_dot_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
-      tgt_add_value = tf.squeeze(tf.slice(tgt_add_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
+
+      if not single_step:
+        tgt_dot_value = tf.squeeze(tf.slice(tgt_dot_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
+        tgt_add_value = tf.squeeze(tf.slice(tgt_add_values, [batch_idx, 0, 0], [1, tgt_seq_lengths[batch_idx], -1]), [0])
+      else:
+        tgt_dot_value = tf.squeeze(tf.slice(tgt_dot_values, [batch_idx, 0, 0], [1, 1, -1]), [0])
+        tgt_add_value = tf.squeeze(tf.slice(tgt_add_values, [batch_idx, 0, 0], [1, 1, -1]), [0])
+
       context_weight = tf.nn.softmax(tf.matmul(tgt_dot_value, src_dot_value, transpose_b=True)) # dim (tgt_len, src_len)
       context = tf.add(tf.matmul(context_weight, src_add_value), tgt_add_value) #dim (tgt_len, out_dim)
-      padding = tf.slice(out_padding, [tgt_seq_lengths[batch_idx], 0], [-1, -1])
-      if outputs is None:
-        outputs = tf.concat(0, [context, padding])
+      if not single_step:
+        padding = tf.slice(out_padding, [tgt_seq_lengths[batch_idx], 0], [-1, -1])
+        if outputs is None:
+          outputs = tf.concat(0, [context, padding])
+        else:
+          outputs = tf.concat(0, [outputs, context, padding])
       else:
-        outputs = tf.concat(0, [outputs, context, padding])
-      weights.append(context_weights)
+        if outputs is None:
+          outputs = context
+        else:
+          outputs = tf.concat(0, [outputs, context])
+      weights.append(context_weight)
 
-    return src_values, tf.reshape(outputs, [batch_size, -1, out_dim]), context_weights
+  if single_step:
+    return outputs, weights
+  else:
+    return tf.reshape(outputs, [batch_size, -1, out_dim]), weights
 
 
 class ModelConfig(dict):
@@ -283,6 +292,21 @@ def create_nmt_graph(config):
                                                       init_state=encoder_init_state,
                                                       scope=varscope,
                                                       keep_rate=1.0 if mode != 0 else keep_rate)
+    src_dot_values, src_add_values = None, None
+    if attention_type == 1:
+      #TODO: make them configurable?
+      src_dim = num_cells * 2 if use_birnn else num_cells
+      dot_dim = num_cells
+      out_dim = num_cells
+      src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
+      src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
+      src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, out_dim], dtype=dtype)
+      src_add_trans_b = tf.get_variable("src_add_trans_b", [out_dim], dtype=dtype)
+      src_input_rs = tf.reshape(encoder_outputs, [-1, src_dim])
+      src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b),
+                                  [batch_size, -1, dot_dim])
+      src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b),
+                                  [batch_size, -1, out_dim])
 
   if use_birnn:
     decoder_init_state, _ = encoder_final_state
@@ -300,19 +324,18 @@ def create_nmt_graph(config):
                                                       scope=varscope,
                                                       keep_rate=1.0 if mode != 0 else keep_rate)
 
-  src_values = None
-  attentions = None
   if attention_type == 1:
-    src_values, s2s_outputs, attentions = GlobalAttention(batch_size,
-                                                          num_cells * 2 if use_birnn else num_cells,
-                                                          num_cells,
-                                                          encoder_outputs,
-                                                          decoder_outputs,
-                                                          num_cells,
-                                                          src_length,
-                                                          tgt_length,
-                                                          src_values=src_values,
-                                                          dot_dim=num_cells)
+    s2s_outputs, _ = GlobalAttention(batch_size,
+                                              num_cells * 2 if use_birnn else num_cells,
+                                              num_cells,
+                                              encoder_outputs,
+                                              decoder_outputs,
+                                              num_cells,
+                                              src_length,
+                                              tgt_length,
+                                              src_values=(src_dot_values, src_add_values),
+                                              dot_dim=num_cells,
+                                              single_step=False)
   elif attention_type == 0:
     s2s_outputs = decoder_outputs
   else:
@@ -336,14 +359,143 @@ def create_nmt_graph(config):
     seq_length_op=seq_length_op,
     encoder_init_state=encoder_init_state,
     encoder_final_state=encoder_final_state,
-    encoder_cached_value=src_values,
-    encoder_attention=attentions,
     decoder_init_state=decoder_init_state,
     decoder_final_state=decoder_final_state,
     tgt_gen_init_state=tgt_gen_init_state,
     tgt_gen_final_state=tgt_gen_final_state,
     logits=logits,
   )
+
+def _create_encoder_eval_graph(config):
+  """no padding"""
+  batch_size = 1
+  source_vocab_size = config.source_vocab_size
+  num_cells = config.embed_size
+  num_layers = config.num_layers
+  dtype = config.dtype
+  use_lstm = config.use_lstm
+  use_birnn = config.use_birnn
+  keep_rate = 1.0
+  attention_type = config.attention_type
+
+  source_input = tf.placeholder(tf.int32, [batch_size, None], name="__QNNI__source_input")
+
+  with vs.variable_scope("input"):
+    src_embedding = tf.get_variable("source_embedding", [source_vocab_size, num_cells], dtype=dtype)
+
+  s2s_src_input = tf.nn.embedding_lookup(src_embedding, source_input)
+  seq_length_op = SequenceLength(batch_size, config.max_length, config.filler)
+  seq_lengths = seq_length_op.get_length(source_input)
+
+  encoder_init_state = None
+  with vs.variable_scope("encoder") as varscope:
+    encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
+                                                      num_cells,
+                                                      num_layers,
+                                                      use_lstm=use_lstm,
+                                                      use_birnn=use_birnn,
+                                                      seq_lengths=seq_lengths,
+                                                      init_state=encoder_init_state,
+                                                      scope=varscope,
+                                                      keep_rate=keep_rate)
+    encoder_outputs = tf.identity(encoder_outputs, name="__QNNO__encoder_output")
+    if use_birnn:
+      final_state, _ = encoder_final_state
+    else:
+      final_state = encoder_final_state
+    encoder_final_state = tf.identity(final_state, name="__QNNO__encoder_final_state")
+    if attention_type == 1:
+      src_dim = num_cells * 2 if use_birnn else num_cells
+      dot_dim = num_cells
+      out_dim = num_cells
+      src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
+      src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
+      src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, out_dim], dtype=dtype)
+      src_add_trans_b = tf.get_variable("src_add_trans_b", [out_dim], dtype=dtype)
+      src_input_rs = tf.reshape(encoder_outputs, [-1, src_dim])
+      src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b),
+                                  [batch_size, -1, dot_dim], name="__QNNO__encoder_dot_value")
+      src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b),
+                                  [batch_size, -1, out_dim], name="__QNNO__encoder_add_value")
+
+def _create_decoder_eval_graph(config):
+  batch_size = 1
+  target_vocab_size = config.target_vocab_size
+  num_cells = config.embed_size
+  num_layers = config.num_layers
+  dtype = config.dtype
+  use_lstm = config.use_lstm
+  use_birnn = config.use_birnn
+  keep_rate = 1.0
+  attention_type = config.attention_type
+
+  target_input = tf.placeholder(tf.int32, [batch_size], name="__QNNI__target_input")
+
+  with vs.variable_scope("input"):
+    tgt_embedding = tf.get_variable("target_embedding", [target_vocab_size, num_cells], dtype=dtype)
+  s2s_tgt_input = tf.nn.embedding_lookup(tgt_embedding, target_input)
+
+  with vs.variable_scope("decoder"):
+    with vs.variable_scope("RNN"):
+      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      if use_lstm:
+        state_size = [num_layers, 2, batch_size, num_cells]
+      else:
+        state_size = [num_layers, batch_size, num_cells]
+      decoder_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__decoder_state")
+      if use_lstm:
+        decoder_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(decoder_init_state_ph, axis=0)))
+      else:
+        decoder_init_state = tuple(tf.unpack(decoder_init_state_ph, axis=0))
+      decoder_output, decoder_final_state = decoder_cell(s2s_tgt_input, decoder_init_state)
+      decoder_final_state = tf.identity(decoder_final_state, name="__QNNO__decoder_state")
+
+  attentions = None
+  if attention_type == 1:
+    src_dim = num_cells * 2 if use_birnn else num_cells
+    dot_dim = num_cells
+    out_dim = num_cells
+    encoder_outputs = tf.placeholder(dtype, [batch_size, None, src_dim], name="__QNNI__encoder_output")
+    src_dot_values = tf.placeholder(dtype, [batch_size, None, dot_dim], name="__QNNI__encoder_dot_value")
+    src_add_values = tf.placeholder(dtype, [batch_size, None, out_dim], name="__QNNI__encoder_add_value")
+    src_length = [tf.shape(encoder_outputs)[1]] * batch_size
+    tgt_length = None
+    s2s_outputs, attentions = GlobalAttention(batch_size,
+                                              src_dim,
+                                              num_cells,
+                                              encoder_outputs,
+                                              decoder_output,
+                                              out_dim,
+                                              src_length,
+                                              tgt_length,
+                                              src_values=(src_dot_values, src_add_values),
+                                              dot_dim=dot_dim,
+                                              single_step=True)
+    attentions = tf.identity(attentions, name="__QNNO__attention")
+  elif attention_type == 0:
+    s2s_outputs = decoder_output
+  else:
+    raise ValueError("attention type %d is not implemented yet" % (attention_type))
+
+  with vs.variable_scope("output"):
+    with vs.variable_scope("RNN"):
+      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate=keep_rate)
+      if use_lstm:
+        state_size = [num_layers, 2, batch_size, num_cells]
+      else:
+        state_size = [num_layers, batch_size, num_cells]
+      tgt_gen_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__target_gen_state")
+      if use_lstm:
+        tgt_gen_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(tgt_gen_init_state_ph, axis=0)))
+      else:
+        tgt_gen_init_state = tuple(tf.unpack(tgt_gen_init_state_ph, axis=0))
+      tgt_gen_output, tgt_gen_final_state = tgt_gen_cell(s2s_outputs, tgt_gen_init_state)
+
+    output = tf.reshape(tgt_gen_output, [-1, num_cells])
+    softmax_w = tf.get_variable("softmax_w", [num_cells, target_vocab_size], dtype=dtype)
+    softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
+    logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="__QNNO__prediction")
+    tgt_gen_final_state = tf.identity(tgt_gen_final_state, name="__QNNO__target_gen_state")
 
 
 class TranslationModel(object):
@@ -652,15 +804,28 @@ def train(FLAGS):
 
 def create_eval_graph(ckpt, config, out_graph_file):
   from tensorflow.python.framework import graph_util
+  tf.reset_default_graph()
   with tf.Graph().as_default() as graph, tf.Session() as session:
     with tf.variable_scope("TranslationModel"):
-      model_graph = create_nmt_graph(config)
+      _create_encoder_eval_graph(config)
+      _create_decoder_eval_graph(config)
 
-    output_node_names = ['TranslationModel/output/prediction']
+    output_node_names = []
     saver = tf.train.Saver(tf.trainable_variables())
     saver.restore(session, ckpt)
     graph_def = session.graph.as_graph_def()
     for node in graph_def.node: node.device = ""
+    for op in session.graph.get_operations():
+      idx = op.name.find("__QNNO__")
+      if idx > 0 and op.name[idx:].find("/") < 0:
+        print("find output node "+op.name)
+        output_node_names.append(op.name)
+      else:
+        idx = op.name.find("__QNNI__")
+        if idx > 0 and op.name[idx:].find("/") < 0:
+          print("find input node " + op.name)
+
+
     output_graph_def = graph_util.convert_variables_to_constants(
       session, graph_def, output_node_names)
 
