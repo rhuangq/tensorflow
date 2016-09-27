@@ -48,78 +48,8 @@ tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basi
 FLAGS = tf.app.flags.FLAGS
 
 
-
 def main(_):
-  source_vocab = seq2seq_attention.read_qnn_vocab(FLAGS.source_vocab_file)
-  target_vocab = seq2seq_attention.read_qnn_vocab(FLAGS.target_vocab_file)
-  data_set = seq2seq_attention.read_eval_data(FLAGS.input_data, source_vocab, FLAGS.reverse)
-  graph = seq2seq_attention.load_eval_graph(FLAGS.graph_file, seq2seq_attention.create_model_config(FLAGS))
-  [source_input,
-   target_input,
-   encoder_cached_value,
-   encoder_attention,
-   decoder_init_state,
-   decoder_final_state,
-   tgt_gen_init_state,
-   tgt_gen_final_state,
-   logits] = [graph['source_input'],
-              graph['target_input'],
-              graph['encoder_cached_value'],
-              graph['encoder_attention'],
-              graph['decoder_init_state'],
-              graph['decoder_final_state'],
-              graph['tgt_gen_init_state'],
-              graph['tgt_gen_final_state'],
-              graph['logits']]
-  preds = tf.reshape(tf.cast(tf.argmax(logits, 1), tf.int32), [-1, 1])
-
-
-  _, tgt_id2word = target_vocab
-  fout = open(FLAGS.output_file, 'w')
-  with tf.Session() as session:
-    for seq in data_set:
-      output = []
-      src = [seq]
-      tgt = [[_BOS_ID]]
-      feed_dict = {source_input:src, target_input:tgt}
-      if encoder_attention is None:
-        [decoder_state,
-         tgt_gen_state,
-         tgt] = session.run([decoder_final_state,
-                             tgt_gen_final_state,
-                             preds], feed_dict)
-      else:
-        [cached_value,
-         attention,
-         decoder_state,
-         tgt_gen_state,
-         tgt] = session.run([encoder_cached_value,
-                              encoder_attention,
-                              decoder_final_state,
-                              tgt_gen_final_state,
-                              preds], feed_dict)
-      output.append(tgt[0][0])
-      while len(output) < FLAGS.max_length and output[-1] != _EOS_ID:
-        if encoder_attention is None:
-          feed_dict = {target_input:tgt, decoder_init_state:decoder_state, tgt_gen_init_state:tgt_gen_state}
-          [decoder_state,
-           tgt_gen_state,
-           tgt] = session.run([decoder_final_state, tgt_gen_final_state, preds], feed_dict)
-        else:
-          feed_dict = {target_input: tgt, encoder_cached_value: cached_value, decoder_init_state: decoder_state,
-                       tgt_gen_init_state: tgt_gen_state}
-          [attention,
-           decoder_state,
-           tgt_gen_state,
-           tgt] = session.run([encoder_attention, decoder_final_state, tgt_gen_final_state, preds], feed_dict)
-
-        output.append(tgt[0][0])
-
-      out_words = [tgt_id2word[idx] for idx in output[0:-1]]
-      fout.write(" ".join(out_words)+"\n")
-
-  fout.close()
-
+  seq2seq_attention.inference(FLAGS)
 
 if __name__ == "__main__":
   tf.app.run()

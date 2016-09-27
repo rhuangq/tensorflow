@@ -11,7 +11,7 @@ import seq2seq_attention
 logging = tf.logging
 
 #models
-tf.app.flags.DEFINE_integer("batch_size", 64,
+tf.app.flags.DEFINE_integer("batch_size", 1,
                             "Batch size to use during evaluation.")
 tf.app.flags.DEFINE_integer("max_length", 100, "the maximum sequence length during evaluation, longer sequence will be discarded")
 tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")

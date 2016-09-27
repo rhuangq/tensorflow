@@ -54,16 +54,15 @@ tf.app.flags.DEFINE_boolean("use_fp16", False,
 tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
 tf.app.flags.DEFINE_boolean("log_device", False, "Set to True to log computation device placement")
 tf.app.flags.DEFINE_boolean("log_stats", False, "log stats for tensorboard")
-tf.app.flags.DEFINE_string("eval_graph", None, "the inference graph base name")
+tf.app.flags.DEFINE_string("out_eval_graph", None, "if set, write the inference graph to this file (pick the best on dev)")
 
 FLAGS = tf.app.flags.FLAGS
 
 def main(_):
   graph_def_file, _, best_ckpt = seq2seq_attention.train(FLAGS)
-  if FLAGS.eval_graph:
+  if FLAGS.out_eval_graph:
     config = seq2seq_attention.create_model_config(FLAGS)
-    out_file = os.path.join(FLAGS.output_dir, FLAGS.eval_graph)
-    seq2seq_attention.create_eval_graph(best_ckpt, config, out_file)
+    seq2seq_attention.create_eval_graph(best_ckpt, config, FLAGS.out_eval_graph)
 
 if __name__ == "__main__":
   tf.app.run()

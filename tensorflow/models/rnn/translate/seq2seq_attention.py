@@ -149,8 +149,6 @@ def GlobalAttention(
       raise ValueError("target data dimension mismatch, batch_size expected %d vs actual %d, dimention expected %d vs actual %d"
                        %(batch_size, bs, tgt_dim, sd))
 
-
-
     tgt_dot_trans_w = tf.get_variable("tgt_dot_trans_w", [tgt_dim, dot_dim], dtype=dtype)
     tgt_dot_trans_b = tf.get_variable("tgt_dot_trans_b", [dot_dim], dtype=dtype)
     tgt_add_trans_w = tf.get_variable("tgt_add_trans_w", [tgt_dim, out_dim], dtype=dtype)
@@ -181,7 +179,7 @@ def GlobalAttention(
         tgt_add_value = tf.squeeze(tf.slice(tgt_add_values, [batch_idx, 0, 0], [1, 1, -1]), [0])
 
       context_weight = tf.nn.softmax(tf.matmul(tgt_dot_value, src_dot_value, transpose_b=True)) # dim (tgt_len, src_len)
-      context = tf.add(tf.matmul(context_weight, src_add_value), tgt_add_value) #dim (tgt_len, out_dim)
+      context = tf.tanh(tf.add(tf.matmul(context_weight, src_add_value), tgt_add_value)) #dim (tgt_len, out_dim)
       if not single_step:
         padding = tf.slice(out_padding, [tgt_seq_lengths[batch_idx], 0], [-1, -1])
         if outputs is None:
@@ -368,7 +366,7 @@ def create_nmt_graph(config):
 
 def _create_encoder_eval_graph(config):
   """no padding"""
-  batch_size = 1
+  batch_size = config.batch_size
   source_vocab_size = config.source_vocab_size
   num_cells = config.embed_size
   num_layers = config.num_layers
@@ -419,7 +417,7 @@ def _create_encoder_eval_graph(config):
                                   [batch_size, -1, out_dim], name="__QNNO__encoder_add_value")
 
 def _create_decoder_eval_graph(config):
-  batch_size = 1
+  batch_size = config.batch_size
   target_vocab_size = config.target_vocab_size
   num_cells = config.embed_size
   num_layers = config.num_layers
@@ -582,66 +580,6 @@ class TranslationModel(object):
       print("Warning: cannot change learning rate in evaluation")
     return session.run(self._learning_rate_decay_op)
 
-
-
-def read_train_data(source_path, target_path, max_size=None):
-  """Read training data from source and target files and put into buckets.
-
-  Args:
-    source_path: path to the files with token-ids for the source language.
-    target_path: path to the file with token-ids for the target language;
-      it must be aligned with the source file: n-th line contains the desired
-      output for n-th line from the source_path.
-    All the data pre-processing must have been done before-hand (including BOS/EOS, reverse etc)
-    max_size: maximum number of lines to read, all other will be ignored;
-      if 0 or None, data files will be read completely (no limit).
-
-  Returns:
-    data_set: a list of length len(_buckets); data_set[n] contains a list of
-      (source, target) pairs read from the provided data files that fit
-      into the n-th bucket, i.e., such that len(source) < _buckets[n][0] and
-      len(target) < _buckets[n][1]; source and target are lists of token-ids.
-  """
-  data_set = [[] for _ in _buckets]
-  with tf.gfile.GFile(source_path, mode="r") as source_file:
-    with tf.gfile.GFile(target_path, mode="r") as target_file:
-      source, target = source_file.readline(), target_file.readline()
-      counter = 0
-      while source and target and (not max_size or counter < max_size):
-        counter += 1
-        if counter % 100000 == 0:
-          print("  reading data line %d" % counter)
-          sys.stdout.flush()
-
-        source_ids = [int(x) for x in source.split()]
-        target_ids = [int(x) for x in target.split()]
-
-        for bucket_id, (source_size, target_size) in enumerate(_buckets):
-          if len(source_ids) <= source_size and len(target_ids) <= target_size:
-            data_set[bucket_id].append([source_ids, target_ids])
-            break
-        source, target = source_file.readline(), target_file.readline()
-  return data_set
-
-def read_dev_data(source_path, target_path, max_len=1000):
-  """read development data (usually pretty small)"""
-  data_set = []
-  max_src_len, max_tgt_len = _buckets[-1]
-  max_len = max(max_src_len, max_tgt_len, max_len)
-  with tf.gfile.GFile(source_path, mode="r") as source_file:
-    with tf.gfile.GFile(target_path, mode="r") as target_file:
-      source, target = source_file.readline(), target_file.readline()
-      while source and target:
-        source_ids = [int(x) for x in source.split()]
-        target_ids = [int(x) for x in target.split()]
-        if len(source_ids) <= max_src_len and len(target_ids) <= max_tgt_len:
-          data_set.append([source_ids, target_ids])
-        source, target = source_file.readline(), target_file.readline()
-
-  #sort the data by length, by target and source
-  data_set.sort(key=lambda x:len(x[1])*max_len+len(x[0]))
-  return data_set
-
 def examine_model(params):
   total = 0
   for v in params:
@@ -663,47 +601,6 @@ def restore_model(saver, session, outdir):
     print("Created model with fresh parameters.")
     session.run(tf.initialize_all_variables())
 
-def get_minibatch(batch_size, data, scale):
-  random_thresh = np.random.random_sample()
-  bucket_id = -1
-  for i in xrange(len(scale)):
-    if scale[i] >= random_thresh:
-      bucket_id = i
-      break
-  assert bucket_id >= 0
-
-  src_size, tgt_size = _buckets[bucket_id]
-  src_inputs, tgt_inputs = [], []
-  for i in xrange(batch_size):
-    curr_src, curr_tgt = random.choice(data[bucket_id])
-    src_pad = [_EOS_ID] * (src_size - len(curr_src))
-    src_inputs.append(curr_src + src_pad)
-    tgt_pad = [_EOS_ID] * (tgt_size - len(curr_tgt))
-    tgt_inputs.append(curr_tgt + tgt_pad)
-
-  return src_inputs, tgt_inputs
-
-def get_minibatch_dev(batch_size, data):
-  """No need for random minibatch, we read the dev data sequentially,
-  for efficiency reason, the `data` need be sorted by length (target, source)"""
-  tot_batches = int(len(data)/batch_size)
-  for i in xrange(tot_batches):
-    begin = i * batch_size
-    end = begin + batch_size
-    src_len = len(data[begin][0])
-    tgt_len = len(data[begin][1])
-    for src, tgt in data[begin+1:end]:
-      if len(src) > src_len: src_len = len(src)
-      if len(tgt) > tgt_len: tgt_len = len(tgt)
-
-    src_inputs, tgt_inputs = [], []
-    for src,tgt in data[begin:end]:
-      src_pad = [_EOS_ID] * (src_len - len(src))
-      src_inputs.append(src+src_pad)
-      tgt_pad = [_EOS_ID] * (tgt_len - len(tgt))
-      tgt_inputs.append(tgt+tgt_pad)
-
-    yield src_inputs,tgt_inputs
 
 def create_model_config(FLAGS):
   orig = ModelConfig()
@@ -746,7 +643,7 @@ def train(FLAGS):
     tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
     graph_def_file = os.path.join(FLAGS.output_dir, "nmt.pb")
 
-    train_set = read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
+    train_set = data_utils_qnn.read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
     train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
     train_total_size = sum(train_bucket_sizes)
     print("Total %d sequences in the training data" % train_total_size)
@@ -757,7 +654,7 @@ def train(FLAGS):
                            for i in xrange(len(train_bucket_sizes))]
     print(train_buckets_scale)
 
-    dev_set = read_dev_data(src_dev, tgt_dev)
+    dev_set = data_utils_qnn.read_dev_data(src_dev, tgt_dev)
     print("Total %d sequences in the development data" %(len(dev_set)))
 
     #TODO: write training stats for tensorboard
@@ -777,7 +674,7 @@ def train(FLAGS):
         print("Has run %d minibatches, and PPL (training) is %.3f" %(iters, trn_ppl))
         trn_model.reset_stats()
       if iters % FLAGS.check_iters == 0:
-        for dev_src_input, dev_tgt_input in get_minibatch_dev(dev_config.batch_size, dev_set):
+        for dev_src_input, dev_tgt_input in data_utils_qnn.get_minibatch_dev(dev_config.batch_size, dev_set):
           dev_model.run_minibatch(session, dev_src_input, dev_tgt_input)
         _, dev_ppl, dev_loss = dev_model.report_progress(session)
         if summary_writer:
@@ -796,7 +693,7 @@ def train(FLAGS):
 
       if iters > FLAGS.max_iters: break
 
-      src_input, tgt_input = get_minibatch(trn_config.batch_size, train_set, train_buckets_scale)
+      src_input, tgt_input = data_utils_qnn.get_minibatch(trn_config.batch_size, train_set, train_buckets_scale)
       trn_model.run_minibatch(session, src_input, tgt_input)
 
   print("the best performing model is "+best_ckpt)
@@ -835,70 +732,110 @@ def create_eval_graph(ckpt, config, out_graph_file):
 
 
 
-def read_eval_data(source_path, vocab, reverse = True):
-  """read eval data, numericized it, reverse it, ..."""
-  data_set = []
-  word2id, _ = vocab
-  for line in open(source_path):
-    ids = [word2id[w] for w in line.split()]
-    if reverse: ids.reverse()
-    ids.insert(0, _BOS_ID)
-    data_set.append(ids)
 
-  return data_set
+def inference(FLAGS):
+  source_vocab = data_utils_qnn.read_qnn_vocab(FLAGS.source_vocab_file)
+  target_vocab =  data_utils_qnn.read_qnn_vocab(FLAGS.target_vocab_file)
+  data_set = data_utils_qnn.read_eval_data(FLAGS.input_data, source_vocab, FLAGS.reverse)
+  _, tgt_id2word = target_vocab
+
+  with tf.Graph().as_default(), tf.Session() as session:
+    ops_io = load_eval_graph(FLAGS.graph_file)
+    source_input = ops_io['source_input']
+    target_input = ops_io['target_input']
+    encoder_output = ops_io['encoder_output']
+    encoder_final_state = ops_io['encoder_final_state']
+    encoder_dot_value_out = ops_io['encoder_dot_value_out']
+    encoder_add_value_out = ops_io['encoder_add_value_out']
+    encoder_dot_value_in = ops_io['encoder_dot_value_in']
+    encoder_add_value_in = ops_io['encoder_add_value_in']
+    attention = ops_io['attention']
+    encoder_output_in = ops_io['encoder_output_in']
+    decoder_init_state = ops_io['decoder_init_state']
+    decoder_final_state = ops_io['decoder_final_state']
+    tgt_gen_init_state = ops_io['tgt_gen_init_state']
+    tgt_gen_final_state = ops_io['tgt_gen_final_state']
+    logits = ops_io['logits']
+    preds = tf.reshape(tf.cast(tf.argmax(logits, 1), tf.int32), [-1])
+
+    fout = open(FLAGS.output_file, 'w')
+    for seq in data_set:
+      src = [seq]
+      [enc_output,
+       enc_final_state,
+       enc_dot_value_out,
+       enc_add_value_out,
+       ] = session.run([encoder_output,
+                        encoder_final_state,
+                        encoder_dot_value_out,
+                        encoder_add_value_out], {source_input:src})
+
+      feed_dict = {encoder_output_in: enc_output, encoder_add_value_in: enc_add_value_out, encoder_dot_value_in: enc_dot_value_out}
+      output = [_BOS_ID]
+      while len(output) < FLAGS.max_length and output[-1] != _EOS_ID:
+        tgt = output[-1]
+        feed_dict[target_input] = [tgt]
+        if tgt == _BOS_ID:
+          feed_dict[decoder_init_state] = enc_final_state
+        else:
+          feed_dict[decoder_init_state] = decoder_state
+          feed_dict[tgt_gen_init_state] = tgt_gen_state
+
+        [enc_attention,
+         pred,
+         decoder_state,
+         tgt_gen_state] = session.run([attention,
+                         preds,
+                         decoder_final_state,
+                         tgt_gen_final_state], feed_dict)
+        output.append(pred[0])
+        print("for %s, attention is %s" %(tgt_id2word[pred[0]], str(enc_attention)))
 
 
+      out_words = [tgt_id2word[idx] for idx in output[1:-1]]
+      fout.write(" ".join(out_words)+"\n")
 
-def load_eval_graph(graph_file, config):
-  config.mode = 2
-  #TODO: change it for beam decoding?
-  config.batch_size = 1
+    fout.close()
+
+def load_eval_graph(graph_file):
   graph_def = tf.GraphDef()
   with open(graph_file, "rb") as f:
     graph_def.ParseFromString(f.read())
-  tf.import_graph_def(graph_def, name="")
-  with tf.variable_scope("TranslationModel"):
-    model_graph = create_nmt_graph(config)
 
-  return model_graph
+  ops_io = {}
+  [ops_io['source_input'],
+   ops_io['target_input'],
+   ops_io['encoder_output'],
+   ops_io['encoder_final_state'],
+   ops_io['encoder_dot_value_out'],
+   ops_io['encoder_add_value_out'],
+   ops_io['encoder_dot_value_in'],
+   ops_io['encoder_add_value_in'],
+   ops_io['attention'],
+   ops_io['encoder_output_in'],
+   ops_io['decoder_init_state'],
+   ops_io['decoder_final_state'],
+   ops_io['tgt_gen_init_state'],
+   ops_io['tgt_gen_final_state'],
+   ops_io['logits']
+   ] = tf.import_graph_def(graph_def, {}, ['TranslationModel/__QNNI__source_input:0',
+                                           'TranslationModel/__QNNI__target_input:0',
+                                           'TranslationModel/encoder/__QNNO__encoder_output:0',
+                                           'TranslationModel/encoder/__QNNO__encoder_final_state:0',
+                                           'TranslationModel/encoder/__QNNO__encoder_dot_value:0',
+                                           'TranslationModel/encoder/__QNNO__encoder_add_value:0',
+                                           'TranslationModel/__QNNI__encoder_dot_value:0',
+                                           'TranslationModel/__QNNI__encoder_add_value:0',
+                                           'TranslationModel/__QNNO__attention:0',
+                                           'TranslationModel/__QNNI__encoder_output:0',
+                                           'TranslationModel/decoder/RNN/__QNNI__decoder_state:0',
+                                           'TranslationModel/decoder/RNN/__QNNO__decoder_state:0',
+                                           'TranslationModel/output/RNN/__QNNI__target_gen_state:0',
+                                           'TranslationModel/output/__QNNO__target_gen_state:0',
+                                           'TranslationModel/output/__QNNO__prediction:0'], name="")
 
-def read_qnn_vocab(vocab_file):
-  word2id = {}
-  id2word = {}
-  voc_size = None
-  idx = -1
-  unk, bos, eos, unk_id, bos_id, eos_id = None, None, None, None, None, None
-  for line in open(vocab_file):
-    if not voc_size:
-      assert line.startswith("<VocabSize>")
-      _, voc_size = line.split()
-      voc_size = int(voc_size)
-    else:
-      word,prob = line.split()
-      try:
-        _ = float(prob)
-        idx += 1
-        word2id[word] = idx
-        id2word[idx] = word
-      except:
-        if word == "<UnknownWord>": unk = prob
-        elif word == "<BeginOfSentenceWord>": bos = prob
-        elif word == "<EndOfSentenceWord>": eos = prob
-        else:
-          raise RuntimeError("cannot parse string %s in the vocab file %s" %(word, vocab_file))
+  return ops_io
 
-  if idx+1 != voc_size:
-    raise RuntimeError("vocab file %s says it has %d words, but only read %d" %(vocab_file, voc_size, idx+1))
-
-  unk_id = word2id[unk]
-  bos_id = word2id[bos]
-  eos_id = word2id[eos]
-
-  if unk_id != _UNK_ID: raise RuntimeError("unkown ID mismatch in the vocab file: %d vs %d" %(unk_id, _UNK_ID))
-  if bos_id != _BOS_ID: raise RuntimeError("BOS ID mismatch in the vocab file: %d vs %d" % (bos_id, _BOS_ID))
-  if eos_id != _EOS_ID: raise RuntimeError("EOS ID mismatch in the vocab file: %d vs %d" % (eos_id, _EOS_ID))
-
-  return (word2id, id2word)
 
 
 
