@@ -355,12 +355,6 @@ def create_nmt_graph(config):
     source_input=source_input,
     target_input=target_input,
     seq_length_op=seq_length_op,
-    encoder_init_state=encoder_init_state,
-    encoder_final_state=encoder_final_state,
-    decoder_init_state=decoder_init_state,
-    decoder_final_state=decoder_final_state,
-    tgt_gen_init_state=tgt_gen_init_state,
-    tgt_gen_final_state=tgt_gen_final_state,
     logits=logits,
   )
 
@@ -382,8 +376,7 @@ def _create_encoder_eval_graph(config):
     src_embedding = tf.get_variable("source_embedding", [source_vocab_size, num_cells], dtype=dtype)
 
   s2s_src_input = tf.nn.embedding_lookup(src_embedding, source_input)
-  seq_length_op = SequenceLength(batch_size, config.max_length, config.filler)
-  seq_lengths = seq_length_op.get_length(source_input)
+  seq_lengths = [tf.shape(source_input)[1]] * batch_size
 
   encoder_init_state = None
   with vs.variable_scope("encoder") as varscope:
@@ -770,7 +763,9 @@ def inference(FLAGS):
                         encoder_dot_value_out,
                         encoder_add_value_out], {source_input:src})
 
-      feed_dict = {encoder_output_in: enc_output, encoder_add_value_in: enc_add_value_out, encoder_dot_value_in: enc_dot_value_out}
+      feed_dict = {encoder_output_in: enc_output,
+                   encoder_add_value_in: enc_add_value_out,
+                   encoder_dot_value_in: enc_dot_value_out}
       output = [_BOS_ID]
       while len(output) < FLAGS.max_length and output[-1] != _EOS_ID:
         tgt = output[-1]
@@ -789,8 +784,6 @@ def inference(FLAGS):
                          decoder_final_state,
                          tgt_gen_final_state], feed_dict)
         output.append(pred[0])
-        print("for %s, attention is %s" %(tgt_id2word[pred[0]], str(enc_attention)))
-
 
       out_words = [tgt_id2word[idx] for idx in output[1:-1]]
       fout.write(" ".join(out_words)+"\n")
