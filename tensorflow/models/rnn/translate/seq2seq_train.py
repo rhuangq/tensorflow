@@ -27,6 +27,7 @@ tf.app.flags.DEFINE_integer("spot_check_iters", 200,
 tf.app.flags.DEFINE_integer("check_iters", 10000, "do the validation for every this amount of model update")
 tf.app.flags.DEFINE_integer("max_iters", 300000, "maximum number of model updates")
 tf.app.flags.DEFINE_integer("random_seed", 5789, "the random seed for repeatable experiments")
+tf.app.flags.DEFINE_boolean("warm_start", True, "curriculum learning (warm start)")
 
 #models
 tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")

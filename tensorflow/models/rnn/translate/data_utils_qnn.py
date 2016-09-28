@@ -60,12 +60,12 @@ def read_qnn_vocab(vocab_file):
 
   return (word2id, id2word)
 
-def read_eval_data(source_path, vocab, reverse = True):
+def read_eval_data(source_path, vocab, unk_id = _UNK_ID, reverse = True):
   """read eval data, numericized it, reverse it, ..."""
   data_set = []
   word2id, _ = vocab
   for line in open(source_path):
-    ids = [word2id[w] for w in line.split()]
+    ids = [word2id[w] if w in word2id else unk_id for w in line.split()]
     if reverse: ids.reverse()
     ids.insert(0, _BOS_ID)
     data_set.append(ids)
