@@ -13,7 +13,6 @@ logging = tf.logging
 #models
 tf.app.flags.DEFINE_integer("batch_size", 1,
                             "Batch size to use during evaluation.")
-tf.app.flags.DEFINE_integer("max_length", 100, "the maximum sequence length during evaluation, longer sequence will be discarded")
 tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")
 tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
@@ -21,8 +20,8 @@ tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
 tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
-tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
+tf.app.flags.DEFINE_integer("attention_dim", 256, "attention vector dimension when using attention.")
 
 #data
 tf.app.flags.DEFINE_string("model_ckpt", None, "the ckpt model file, must set")

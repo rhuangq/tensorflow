@@ -36,8 +36,8 @@ tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
 tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
-tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
+tf.app.flags.DEFINE_integer("attention_dim", 256, "attention vector dimension when using attention.")
 
 #data
 tf.app.flags.DEFINE_string("data_dir", "data", "Data directory, assume {source|target}.{train|valid|vocab} files (generated in the QNN setup)")
@@ -62,6 +62,7 @@ def main(_):
   graph_def_file, _, best_ckpt = seq2seq_attention.train(FLAGS)
   if FLAGS.out_eval_graph:
     config = seq2seq_attention.create_model_config(FLAGS)
+    config.batch_size = 1
     seq2seq_attention.create_eval_graph(best_ckpt, config, FLAGS.out_eval_graph)
 
 if __name__ == "__main__":

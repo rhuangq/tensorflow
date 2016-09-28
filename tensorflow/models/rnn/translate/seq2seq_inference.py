@@ -33,17 +33,8 @@ tf.app.flags.DEFINE_string("source_vocab_file", None, "the source vocab file (fr
 tf.app.flags.DEFINE_string("target_vocab_file", None, "the target vocab file (from QNN), must set")
 tf.app.flags.DEFINE_string("input_data", None, "the source data file, one sequence per line, pre-numericized, must set")
 tf.app.flags.DEFINE_string("output_file", None, "the generated data file, one sequence per line, must set")
-tf.app.flags.DEFINE_integer("max_length", 60, "the maximum sequence length, longer sequence will be discarded")
+tf.app.flags.DEFINE_integer("max_length", 100, "the maximum sequence length, longer sequence will be discarded")
 tf.app.flags.DEFINE_boolean("reverse", True, "reverse the source sequence")
-tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")
-tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
-tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
-tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
-tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
-tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
-tf.app.flags.DEFINE_integer("num_samples", 512, "number of samples used in importance sampling, use 0 to turn it off.")
-tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
 
 FLAGS = tf.app.flags.FLAGS
 
