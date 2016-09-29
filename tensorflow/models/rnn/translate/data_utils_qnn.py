@@ -26,29 +26,28 @@ def read_qnn_vocab(vocab_file):
   word2id = {}
   id2word = {}
   voc_size = None
-  idx = -1
+  idx = 0
   unk, bos, eos, unk_id, bos_id, eos_id = None, None, None, None, None, None
-  for line in open(vocab_file):
+  for line in open(vocab_file, 'rb'):
+    word, prob = line.split()
     if not voc_size:
-      assert line.startswith("<VocabSize>")
-      _, voc_size = line.split()
-      voc_size = int(voc_size)
+      assert word == b"<VocabSize>"
+      voc_size = int(prob)
     else:
-      word,prob = line.split()
       try:
         _ = float(prob)
-        idx += 1
         word2id[word] = idx
         id2word[idx] = word
+        idx += 1
       except:
-        if word == "<UnknownWord>": unk = prob
-        elif word == "<BeginOfSentenceWord>": bos = prob
-        elif word == "<EndOfSentenceWord>": eos = prob
+        if word == b"<UnknownWord>": unk = prob
+        elif word == b"<BeginOfSentenceWord>": bos = prob
+        elif word == b"<EndOfSentenceWord>": eos = prob
         else:
           raise RuntimeError("cannot parse string %s in the vocab file %s" %(word, vocab_file))
 
-  if idx+1 != voc_size:
-    raise RuntimeError("vocab file %s says it has %d words, but only read %d" %(vocab_file, voc_size, idx+1))
+  if idx != voc_size or len(word2id) != voc_size:
+    raise RuntimeError("vocab file %s says it has %d words, but only read %d" %(vocab_file, voc_size, idx))
 
   unk_id = word2id[unk]
   bos_id = word2id[bos]
@@ -64,7 +63,7 @@ def read_eval_data(source_path, vocab, unk_id = _UNK_ID, reverse = True):
   """read eval data, numericized it, reverse it, ..."""
   data_set = []
   word2id, _ = vocab
-  for line in open(source_path):
+  for line in open(source_path, 'rb'):
     ids = [word2id[w] if w in word2id else unk_id for w in line.split()]
     if reverse: ids.reverse()
     ids.insert(0, _BOS_ID)
