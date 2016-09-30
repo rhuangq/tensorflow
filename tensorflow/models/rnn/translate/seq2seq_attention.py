@@ -731,7 +731,7 @@ def train(FLAGS):
   tgt_train = os.path.join(FLAGS.data_dir, "target.train")
   src_dev = os.path.join(FLAGS.data_dir, "source.valid")
   tgt_dev = os.path.join(FLAGS.data_dir, "target.valid")
-  random.seed(FLAGS.random_seed)
+  random_numbers = [random.Random(FLAGS.random_seed * (i + 1)) for i in xrange(len(_buckets))]
 
 
   with tf.Graph().as_default(), \
@@ -807,7 +807,8 @@ def train(FLAGS):
 
       src_input, tgt_input = data_utils_qnn.get_minibatch(trn_config.batch_size,
                                                           train_set,
-                                                          train_buckets_scale_ws if warm_start and iters < FLAGS.check_iters else train_buckets_scale)
+                                                          train_buckets_scale_ws if warm_start and iters < FLAGS.check_iters else train_buckets_scale,
+                                                          random_numbers)
       trn_model.run_minibatch(session, src_input, tgt_input)
 
   print("the best performing model is "+best_ckpt)
@@ -872,7 +873,7 @@ def inference(FLAGS):
     logits = ops_io['logits']
     preds = tf.reshape(tf.cast(tf.argmax(logits, 1), tf.int32), [-1])
 
-    fout = open(FLAGS.output_file, 'w')
+    fout = open(FLAGS.output_file, 'wb')
     for seq in data_set:
       src = [seq]
       [enc_output,
@@ -907,7 +908,7 @@ def inference(FLAGS):
         output.append(pred[0])
 
       out_words = [tgt_id2word[idx] for idx in output[1:-1]]
-      fout.write(" ".join(out_words)+"\n")
+      fout.write(b" ".join(out_words)+b"\n")
 
     fout.close()
 

@@ -11,10 +11,10 @@ import tensorflow as tf
 
 #TODO: set it through command line or config files?
 # MT
-#_buckets = [(5, 10), (10, 15), (15, 20), (20, 25), (25, 30), (30, 35), (35, 40), (40, 45), (52, 52)]
+_buckets = [(5, 10), (10, 15), (15, 20), (20, 25), (25, 30), (30, 35), (35, 40), (40, 45), (52, 52)]
 
 # G2P
-_buckets = [(5, 5), (7, 7), (9, 9), (11, 11), (15, 15), (20, 20), (32, 32)]
+#_buckets = [(5, 5), (7, 7), (9, 9), (11, 11), (15, 15), (20, 20), (32, 32)]
 
 # this is from the vocab file, it's ok since we never change these values
 _UNK_ID = 0
@@ -130,7 +130,7 @@ def read_dev_data(source_path, target_path, max_len=1000):
   data_set.sort(key=lambda x:len(x[1])*max_len+len(x[0]))
   return data_set
 
-def get_minibatch(batch_size, data, scale):
+def get_minibatch(batch_size, data, scale, random_numbers):
   random_thresh = np.random.random_sample()
   bucket_id = -1
   for i in xrange(len(scale)):
@@ -142,7 +142,7 @@ def get_minibatch(batch_size, data, scale):
   src_size, tgt_size = _buckets[bucket_id]
   src_inputs, tgt_inputs = [], []
   for i in xrange(batch_size):
-    curr_src, curr_tgt = random.choice(data[bucket_id])
+    curr_src, curr_tgt = random_numbers[bucket_id].choice(data[bucket_id])
     src_pad = [_EOS_ID] * (src_size - len(curr_src))
     src_inputs.append(curr_src + src_pad)
     tgt_pad = [_EOS_ID] * (tgt_size - len(curr_tgt))
