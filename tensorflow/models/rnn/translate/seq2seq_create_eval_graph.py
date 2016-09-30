@@ -14,7 +14,8 @@ logging = tf.logging
 tf.app.flags.DEFINE_integer("batch_size", 1,
                             "Batch size to use during evaluation.")
 tf.app.flags.DEFINE_integer("embed_size", 128, "Size of embedding vector.")
-tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
+tf.app.flags.DEFINE_integer("num_layers", 3, "Number of RNN layers in the encoder-decoder model.")
+tf.app.flags.DEFINE_integer("num_gen_layers", 3, "Number of RNN layers in the target generation model.")
 tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
 tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
 tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")

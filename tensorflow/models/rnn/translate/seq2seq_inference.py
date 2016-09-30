@@ -29,6 +29,8 @@ logging = tf.logging
 
 
 tf.app.flags.DEFINE_string("graph_file", None, "the model file, must set")
+tf.app.flags.DEFINE_boolean("has_attention", True, "the graph has attention model")
+tf.app.flags.DEFINE_boolean("has_gen_layers", True, "the graph has RNN in the target generation (not the decoder RNN)")
 tf.app.flags.DEFINE_string("source_vocab_file", None, "the source vocab file (from QNN), must set")
 tf.app.flags.DEFINE_string("target_vocab_file", None, "the target vocab file (from QNN), must set")
 tf.app.flags.DEFINE_string("input_data", None, "the source data file, one sequence per line, pre-numericized, must set")

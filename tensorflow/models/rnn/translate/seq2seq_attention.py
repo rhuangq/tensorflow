@@ -205,6 +205,7 @@ class ModelConfig(dict):
     self.batch_size = 64
     self.embed_size = 128
     self.num_layers = 3
+    self.num_gen_layers = 3
     self.use_lstm = True
     self.use_birnn = False
     self.source_vocab_size = 100
@@ -228,6 +229,7 @@ class ModelConfig(dict):
     self['batch_size'] = self.batch_size
     self['embed_size'] = self.embed_size
     self['num_layers'] = self.num_layers
+    self['num_gen_layers'] = self.num_gen_layers
     self['use_lstm'] = self.use_lstm
     self['use_birnn'] = self.use_birnn
     self['source_vocab_size'] = self.source_vocab_size
@@ -261,6 +263,7 @@ def create_nmt_graph(config):
   target_vocab_size = config.target_vocab_size
   num_cells = config.embed_size
   num_layers = config.num_layers
+  num_gen_layers = config.num_gen_layers
   dtype = config.dtype
   max_length = config.max_length
   use_lstm = config.use_lstm
@@ -344,12 +347,15 @@ def create_nmt_graph(config):
     raise ValueError("attention type %d is not implemented yet" % (attention_type))
 
   with vs.variable_scope("output"):
-    tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_layers,
-                                          keep_rate=1.0 if mode != 0 else config.keep_rate)
-    tgt_gen_init_state = None
-    tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
-                                                             initial_state=tgt_gen_init_state, dtype=dtype,
-                                                             time_major=False)
+    if num_gen_layers > 0:
+      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers,
+                                            keep_rate=1.0 if mode != 0 else config.keep_rate)
+      tgt_gen_init_state = None
+      tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
+                                                               initial_state=tgt_gen_init_state, dtype=dtype,
+                                                               time_major=False)
+    else:
+      tgt_gen_outputs = s2s_outputs
     output = tf.reshape(tgt_gen_outputs, [-1, attention_dim])
     softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
@@ -369,6 +375,7 @@ def create_recurrent_attention_graph(config):
   target_vocab_size = config.target_vocab_size
   num_cells = config.embed_size
   num_layers = config.num_layers
+  num_gen_layers = config.num_gen_layers
   dtype = config.dtype
   max_length = config.max_length
   use_lstm = config.use_lstm
@@ -452,12 +459,15 @@ def create_recurrent_attention_graph(config):
     raise ValueError("attention type %d is not implemented yet" % (attention_type))
 
   with vs.variable_scope("output"):
-    tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_layers,
-                                          keep_rate=1.0 if mode != 0 else config.keep_rate)
-    tgt_gen_init_state = None
-    tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
-                                                             initial_state=tgt_gen_init_state, dtype=dtype,
-                                                             time_major=False)
+    if num_gen_layers > 0:
+      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers,
+                                            keep_rate=1.0 if mode != 0 else config.keep_rate)
+      tgt_gen_init_state = None
+      tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
+                                                               initial_state=tgt_gen_init_state, dtype=dtype,
+                                                               time_major=False)
+    else:
+      tgt_gen_outputs = s2s_outputs
     output = tf.reshape(tgt_gen_outputs, [-1, attention_dim])
     softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
@@ -526,6 +536,7 @@ def _create_decoder_eval_graph(config):
   target_vocab_size = config.target_vocab_size
   num_cells = config.embed_size
   num_layers = config.num_layers
+  num_gen_layers = config.num_gen_layers
   dtype = config.dtype
   use_lstm = config.use_lstm
   use_birnn = config.use_birnn
@@ -581,24 +592,28 @@ def _create_decoder_eval_graph(config):
     raise ValueError("attention type %d is not implemented yet" % (attention_type))
 
   with vs.variable_scope("output"):
-    with vs.variable_scope("RNN"):
-      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_layers, keep_rate=keep_rate)
-      if use_lstm:
-        state_size = [num_layers, 2, batch_size, attention_dim]
-      else:
-        state_size = [num_layers, batch_size, attention_dim]
-      tgt_gen_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__target_gen_state")
-      if use_lstm:
-        tgt_gen_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(tgt_gen_init_state_ph, axis=0)))
-      else:
-        tgt_gen_init_state = tuple(tf.unpack(tgt_gen_init_state_ph, axis=0))
-      tgt_gen_output, tgt_gen_final_state = tgt_gen_cell(s2s_outputs, tgt_gen_init_state)
+    if num_gen_layers > 0:
+      with vs.variable_scope("RNN"):
+        tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers, keep_rate=keep_rate)
+        if use_lstm:
+          state_size = [num_gen_layers, 2, batch_size, attention_dim]
+        else:
+          state_size = [num_gen_layers, batch_size, attention_dim]
+        tgt_gen_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__target_gen_state")
+        if use_lstm:
+          tgt_gen_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(tgt_gen_init_state_ph, axis=0)))
+        else:
+          tgt_gen_init_state = tuple(tf.unpack(tgt_gen_init_state_ph, axis=0))
+        tgt_gen_output, tgt_gen_final_state = tgt_gen_cell(s2s_outputs, tgt_gen_init_state)
+      tgt_gen_final_state = tf.identity(tgt_gen_final_state, name="__QNNO__target_gen_state")
+    else:
+      tgt_gen_output = s2s_outputs
 
     output = tf.reshape(tgt_gen_output, [-1, attention_dim])
     softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
     logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="__QNNO__prediction")
-    tgt_gen_final_state = tf.identity(tgt_gen_final_state, name="__QNNO__target_gen_state")
+
 
 
 class TranslationModel(object):
@@ -853,21 +868,23 @@ def inference(FLAGS):
   target_vocab =  data_utils_qnn.read_qnn_vocab(FLAGS.target_vocab_file)
   data_set = data_utils_qnn.read_eval_data(FLAGS.input_data, source_vocab, reverse = FLAGS.reverse)
   _, tgt_id2word = target_vocab
+  has_attention = FLAGS.has_attention
+  has_gen_layers = FLAGS.has_gen_layers
 
   with tf.Graph().as_default(), tf.Session() as session:
-    ops_io = load_eval_graph(FLAGS.graph_file)
+    ops_io = load_eval_graph(FLAGS.graph_file, has_attention, has_gen_layers)
     source_input = ops_io['source_input']
     target_input = ops_io['target_input']
-    encoder_output = ops_io['encoder_output']
     encoder_final_state = ops_io['encoder_final_state']
+    decoder_init_state = ops_io['decoder_init_state']
+    decoder_final_state = ops_io['decoder_final_state']
     encoder_dot_value_out = ops_io['encoder_dot_value_out']
     encoder_add_value_out = ops_io['encoder_add_value_out']
     encoder_dot_value_in = ops_io['encoder_dot_value_in']
     encoder_add_value_in = ops_io['encoder_add_value_in']
     attention = ops_io['attention']
     encoder_output_in = ops_io['encoder_output_in']
-    decoder_init_state = ops_io['decoder_init_state']
-    decoder_final_state = ops_io['decoder_final_state']
+    encoder_output = ops_io['encoder_output']
     tgt_gen_init_state = ops_io['tgt_gen_init_state']
     tgt_gen_final_state = ops_io['tgt_gen_final_state']
     logits = ops_io['logits']
@@ -880,15 +897,22 @@ def inference(FLAGS):
        enc_final_state,
        enc_dot_value_out,
        enc_add_value_out,
-       ] = session.run([encoder_output,
+       ] = session.run([encoder_output if has_attention else tf.no_op(),
                         encoder_final_state,
-                        encoder_dot_value_out,
-                        encoder_add_value_out], {source_input:src})
+                        encoder_dot_value_out if has_attention else tf.no_op(),
+                        encoder_add_value_out if has_attention else tf.no_op()
+                        ], {source_input:src})
 
-      feed_dict = {encoder_output_in: enc_output,
-                   encoder_add_value_in: enc_add_value_out,
-                   encoder_dot_value_in: enc_dot_value_out}
+      if has_attention:
+        feed_dict = {encoder_output_in: enc_output,
+                     encoder_add_value_in: enc_add_value_out,
+                     encoder_dot_value_in: enc_dot_value_out
+                     }
+      else:
+        feed_dict = {}
+
       output = [_BOS_ID]
+      decoder_state, tgt_gen_state = None, None
       while len(output) < FLAGS.max_length and output[-1] != _EOS_ID:
         tgt = output[-1]
         feed_dict[target_input] = [tgt]
@@ -896,15 +920,17 @@ def inference(FLAGS):
           feed_dict[decoder_init_state] = enc_final_state
         else:
           feed_dict[decoder_init_state] = decoder_state
-          feed_dict[tgt_gen_init_state] = tgt_gen_state
+          if has_gen_layers:
+            feed_dict[tgt_gen_init_state] = tgt_gen_state
 
         [enc_attention,
          pred,
          decoder_state,
-         tgt_gen_state] = session.run([attention,
-                         preds,
-                         decoder_final_state,
-                         tgt_gen_final_state], feed_dict)
+         tgt_gen_state] = session.run([attention if has_attention else tf.no_op(),
+                                       preds,
+                                       decoder_final_state,
+                                       tgt_gen_final_state if has_gen_layers else tf.no_op()
+                                       ], feed_dict)
         output.append(pred[0])
 
       out_words = [tgt_id2word[idx] for idx in output[1:-1]]
@@ -912,42 +938,103 @@ def inference(FLAGS):
 
     fout.close()
 
-def load_eval_graph(graph_file):
+def load_eval_graph(graph_file, has_attention, has_gen_layers):
   graph_def = tf.GraphDef()
   with open(graph_file, "rb") as f:
     graph_def.ParseFromString(f.read())
 
+  entries = ['TranslationModel/__QNNI__source_input:0',
+             'TranslationModel/__QNNI__target_input:0',
+             'TranslationModel/encoder/__QNNO__encoder_final_state:0',
+             'TranslationModel/decoder/RNN/__QNNI__decoder_state:0',
+             'TranslationModel/decoder/RNN/__QNNO__decoder_state:0',
+             'TranslationModel/output/__QNNO__prediction:0',
+             ]
+
+  if has_attention:
+    entries.extend(['TranslationModel/encoder/__QNNO__encoder_output:0',
+                    'TranslationModel/encoder/__QNNO__encoder_dot_value:0',
+                    'TranslationModel/encoder/__QNNO__encoder_add_value:0',
+                    'TranslationModel/__QNNI__encoder_dot_value:0',
+                    'TranslationModel/__QNNI__encoder_add_value:0',
+                    'TranslationModel/__QNNO__attention:0',
+                    'TranslationModel/__QNNI__encoder_output:0',
+                    ])
+
+  if has_gen_layers:
+    entries.extend(['TranslationModel/output/RNN/__QNNI__target_gen_state:0',
+                    'TranslationModel/output/__QNNO__target_gen_state:0',
+                    ])
+
   ops_io = {}
-  [ops_io['source_input'],
-   ops_io['target_input'],
-   ops_io['encoder_output'],
-   ops_io['encoder_final_state'],
-   ops_io['encoder_dot_value_out'],
-   ops_io['encoder_add_value_out'],
-   ops_io['encoder_dot_value_in'],
-   ops_io['encoder_add_value_in'],
-   ops_io['attention'],
-   ops_io['encoder_output_in'],
-   ops_io['decoder_init_state'],
-   ops_io['decoder_final_state'],
-   ops_io['tgt_gen_init_state'],
-   ops_io['tgt_gen_final_state'],
-   ops_io['logits']
-   ] = tf.import_graph_def(graph_def, {}, ['TranslationModel/__QNNI__source_input:0',
-                                           'TranslationModel/__QNNI__target_input:0',
-                                           'TranslationModel/encoder/__QNNO__encoder_output:0',
-                                           'TranslationModel/encoder/__QNNO__encoder_final_state:0',
-                                           'TranslationModel/encoder/__QNNO__encoder_dot_value:0',
-                                           'TranslationModel/encoder/__QNNO__encoder_add_value:0',
-                                           'TranslationModel/__QNNI__encoder_dot_value:0',
-                                           'TranslationModel/__QNNI__encoder_add_value:0',
-                                           'TranslationModel/__QNNO__attention:0',
-                                           'TranslationModel/__QNNI__encoder_output:0',
-                                           'TranslationModel/decoder/RNN/__QNNI__decoder_state:0',
-                                           'TranslationModel/decoder/RNN/__QNNO__decoder_state:0',
-                                           'TranslationModel/output/RNN/__QNNI__target_gen_state:0',
-                                           'TranslationModel/output/__QNNO__target_gen_state:0',
-                                           'TranslationModel/output/__QNNO__prediction:0'], name="")
+  if has_attention and has_gen_layers:
+    [ops_io['source_input'],
+     ops_io['target_input'],
+     ops_io['encoder_final_state'],
+     ops_io['decoder_init_state'],
+     ops_io['decoder_final_state'],
+     ops_io['logits'],
+     ops_io['encoder_output'],
+     ops_io['encoder_dot_value_out'],
+     ops_io['encoder_add_value_out'],
+     ops_io['encoder_dot_value_in'],
+     ops_io['encoder_add_value_in'],
+     ops_io['attention'],
+     ops_io['encoder_output_in'],
+     ops_io['tgt_gen_init_state'],
+     ops_io['tgt_gen_final_state'],
+     ] = tf.import_graph_def(graph_def, {}, entries, name="")
+  elif has_attention and not has_gen_layers:
+    [ops_io['source_input'],
+     ops_io['target_input'],
+     ops_io['encoder_final_state'],
+     ops_io['decoder_init_state'],
+     ops_io['decoder_final_state'],
+     ops_io['logits'],
+     ops_io['encoder_output'],
+     ops_io['encoder_dot_value_out'],
+     ops_io['encoder_add_value_out'],
+     ops_io['encoder_dot_value_in'],
+     ops_io['encoder_add_value_in'],
+     ops_io['attention'],
+     ops_io['encoder_output_in'],
+     ] = tf.import_graph_def(graph_def, {}, entries, name="")
+    ops_io['tgt_gen_init_state'] = None
+    ops_io['tgt_gen_final_state'] = None
+  elif not has_attention and has_gen_layers:
+    [ops_io['source_input'],
+     ops_io['target_input'],
+     ops_io['encoder_final_state'],
+     ops_io['decoder_init_state'],
+     ops_io['decoder_final_state'],
+     ops_io['logits'],
+     ops_io['tgt_gen_init_state'],
+     ops_io['tgt_gen_final_state'],
+     ] = tf.import_graph_def(graph_def, {}, entries, name="")
+    ops_io['encoder_output'] = None
+    ops_io['encoder_dot_value_out'] = None
+    ops_io['encoder_add_value_out'] = None
+    ops_io['encoder_dot_value_in'] = None
+    ops_io['encoder_add_value_in'] = None
+    ops_io['attention'] = None
+    ops_io['encoder_output_in'] = None
+  else:
+    [ops_io['source_input'],
+     ops_io['target_input'],
+     ops_io['encoder_final_state'],
+     ops_io['decoder_init_state'],
+     ops_io['decoder_final_state'],
+     ops_io['logits'],
+     ] = tf.import_graph_def(graph_def, {}, entries, name="")
+    ops_io['encoder_output'] = None
+    ops_io['encoder_dot_value_out'] = None
+    ops_io['encoder_add_value_out'] = None
+    ops_io['encoder_dot_value_in'] = None
+    ops_io['encoder_add_value_in'] = None
+    ops_io['attention'] = None
+    ops_io['encoder_output_in'] = None
+    ops_io['tgt_gen_init_state'] = None
+    ops_io['tgt_gen_final_state'] = None
 
   return ops_io
 
