@@ -13,6 +13,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import tensor_array_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
@@ -69,14 +70,13 @@ class SequenceLength(object):
     return tf.cast(tf.not_equal(data, tf.slice(self.mapper, [0, 0], [-1, tf.shape(data)[1]])), dtype=tf.float32)
 
 
-def Seq2SeqRnn(
-               inputs,
+def Seq2SeqRnn(inputs,
                num_cells,
                num_layers,
                use_lstm=False,
                use_birnn=False,
                seq_lengths=None,
-              init_state=None,
+               init_state=None,
                keep_rate=0.5,
                initializer=None,
                scope=None,
@@ -383,6 +383,7 @@ def create_recurrent_attention_graph(config):
   keep_rate = config.keep_rate
   mode = config.mode
   attention_type = config.attention_type
+  assert attention_type == 2
   attention_dim = config.attention_dim if attention_type != 0 else num_cells
   dot_dim = num_cells
 
@@ -412,73 +413,62 @@ def create_recurrent_attention_graph(config):
                                                       init_state=encoder_init_state,
                                                       scope=varscope,
                                                       keep_rate=1.0 if mode != 0 else keep_rate)
-    src_dot_values, src_add_values = None, None
-    if attention_type == 1:
-      src_dim = num_cells * 2 if use_birnn else num_cells
-      src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
-      src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
-      src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, attention_dim], dtype=dtype)
-      src_add_trans_b = tf.get_variable("src_add_trans_b", [attention_dim], dtype=dtype)
-      src_input_rs = tf.reshape(encoder_outputs, [-1, src_dim])
-      src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b),
-                                  [batch_size, -1, dot_dim])
-      src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b),
-                                  [batch_size, -1, attention_dim])
+
+    src_dim = num_cells * 2 if use_birnn else num_cells
+    src_dot_trans_w = tf.get_variable("src_dot_trans_w", [src_dim, dot_dim], dtype=dtype)
+    src_dot_trans_b = tf.get_variable("src_dot_trans_b", [dot_dim], dtype=dtype)
+    src_add_trans_w = tf.get_variable("src_add_trans_w", [src_dim, attention_dim], dtype=dtype)
+    src_add_trans_b = tf.get_variable("src_add_trans_b", [attention_dim], dtype=dtype)
+    src_input_rs = tf.reshape(encoder_outputs, [-1, src_dim])
+    src_dot_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_dot_trans_w), src_dot_trans_b),
+                                [batch_size, -1, dot_dim])
+    src_add_values = tf.reshape(tf.add(tf.matmul(src_input_rs, src_add_trans_w), src_add_trans_b),
+                                [batch_size, -1, attention_dim])
 
   if use_birnn:
     decoder_init_state, _ = encoder_final_state
   else:
     decoder_init_state = encoder_final_state
 
-  with vs.variable_scope("decoder") as varscope:
-    decoder_outputs, decoder_final_state = Seq2SeqRnn(s2s_tgt_input,
-                                                      num_cells,
-                                                      num_layers,
-                                                      use_lstm=use_lstm,
-                                                      use_birnn=False,
-                                                      seq_lengths=tgt_length,
-                                                      init_state=decoder_init_state,
-                                                      scope=varscope,
-                                                      keep_rate=1.0 if mode != 0 else keep_rate)
+  with vs.variable_scope("decoder"):
+    with vs.variable_scope("RNN"):
+      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      decoder_output, decoder_final_state = decoder_cell(tf.reshape(
+        tf.slice(s2s_tgt_input, [0,0,0], [-1,1,-1]), [batch_size, num_cells]), decoder_init_state)
+  s2s_outputs, _ = GlobalAttention(batch_size,
+                                   src_dim,
+                                   num_cells,
+                                   encoder_outputs,
+                                   decoder_output,
+                                   attention_dim,
+                                   src_length,
+                                   tgt_seq_lengths=None,
+                                   src_values=(src_dot_values, src_add_values),
+                                   dot_dim=dot_dim,
+                                   single_step=True)
 
-  if attention_type == 1:
-    s2s_outputs, _ = GlobalAttention(batch_size,
-                                     num_cells * 2 if use_birnn else num_cells,
-                                     num_cells,
-                                     encoder_outputs,
-                                     decoder_outputs,
-                                     attention_dim,
-                                     src_length,
-                                     tgt_length,
-                                     src_values=(src_dot_values, src_add_values),
-                                     dot_dim=dot_dim,
-                                     single_step=False)
-  elif attention_type == 0:
-    s2s_outputs = decoder_outputs
-  else:
-    raise ValueError("attention type %d is not implemented yet" % (attention_type))
+  max_step = tf.cast(tf.argmax(tgt_length, 0), tf.int32)
+  cur_step = tf.constant(0, tf.int32, [1])
+  output_ta = tuple(tensor_array_ops.TensorArray(dtype=dtype, size=max_step, tensor_array_name="context_output"))
+  output_ta[0].write(cur_step, s2s_outputs)
 
-  with vs.variable_scope("output"):
-    if num_gen_layers > 0:
-      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers,
-                                            keep_rate=1.0 if mode != 0 else config.keep_rate)
-      tgt_gen_init_state = None
-      tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
-                                                               initial_state=tgt_gen_init_state, dtype=dtype,
-                                                               time_major=False)
-    else:
-      tgt_gen_outputs = s2s_outputs
-    output = tf.reshape(tgt_gen_outputs, [-1, attention_dim])
-    softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
-    softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
-    logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="prediction")
+  def _time_step(time, output_ta_t, state):
+    input = output_ta_t[0].read(time)
+    next_time = time + 1
+    #TODO: apply transform before adding
+    new_input = tf.add(input, tf.reshape(tf.slice(s2s_tgt_input, [0, next_time, 0], [-1, 1, ])))
 
-  return dict(
-    source_input=source_input,
-    target_input=target_input,
-    seq_length_op=seq_length_op,
-    logits=logits,
-  )
+    decoder_output, decoder_state = decoder_cell()
+
+
+
+
+
+
+
+
+
+
 
 def _create_encoder_eval_graph(config):
   """no padding"""
@@ -567,6 +557,7 @@ def _create_decoder_eval_graph(config):
       decoder_final_state = tf.identity(decoder_final_state, name="__QNNO__decoder_state")
 
   attentions = None
+  s2s_outputs = None
   if attention_type == 1:
     src_dim = num_cells * 2 if use_birnn else num_cells
     encoder_outputs = tf.placeholder(dtype, [batch_size, None, src_dim], name="__QNNI__encoder_output")
@@ -591,6 +582,7 @@ def _create_decoder_eval_graph(config):
   else:
     raise ValueError("attention type %d is not implemented yet" % (attention_type))
 
+  tgt_gen_output = None
   with vs.variable_scope("output"):
     if num_gen_layers > 0:
       with vs.variable_scope("RNN"):
@@ -643,7 +635,7 @@ class TranslationModel(object):
     self.total_accuracy = 0
     self.global_step = tf.Variable(0, trainable=False)
     self.is_training = is_training
-    self._accuracy = tf.no_op()
+    self._accuracy = None
 
     if not is_training:
       self._accuracy = tf.reduce_sum(tf.cast(tf.equal(tgt_output, tf.cast(tf.argmax(logits, 1), tf.int32)), tf.float32) * tgt_weight)
@@ -669,11 +661,17 @@ class TranslationModel(object):
     feed_dict = {}
     feed_dict[self.source_input] = source_input
     feed_dict[self.target_input] = target_input
-    cost, weight, accuracy, _ = session.run([self._cost,
-                                             self._batch_weight,
-                                             self._accuracy,
-                                             self._train_op if self.is_training else self._eval_op],
-                                            feed_dict)
+    if self.is_training:
+      cost, weight, _ = session.run([self._cost,
+                                     self._batch_weight,
+                                     self._train_op
+                                     ], feed_dict)
+    else:
+      cost, weight, accuracy, _ = session.run([self._cost,
+                                               self._batch_weight,
+                                               self._accuracy,
+                                               self._eval_op
+                                               ], feed_dict)
     self.total_cost += cost
     self.total_weight += weight
     if not self.is_training: self.total_accuracy += accuracy
@@ -775,6 +773,7 @@ def train(FLAGS):
                            for i in xrange(len(train_bucket_sizes))]
     print(train_buckets_scale)
 
+    train_buckets_scale_ws = None
     if warm_start:
       train_bucket_sizes_ws = [train_bucket_sizes[i]*1.0/(2**i) for i in xrange(len(train_bucket_sizes))]
       train_total_size_ws = sum(train_bucket_sizes_ws)
@@ -860,9 +859,6 @@ def create_eval_graph(ckpt, config, out_graph_file):
     f.write(output_graph_def.SerializeToString())
   print("%d ops in the final graph." % len(output_graph_def.node))
 
-
-
-
 def inference(FLAGS):
   source_vocab = data_utils_qnn.read_qnn_vocab(FLAGS.source_vocab_file)
   target_vocab =  data_utils_qnn.read_qnn_vocab(FLAGS.target_vocab_file)
@@ -893,23 +889,25 @@ def inference(FLAGS):
     fout = open(FLAGS.output_file, 'wb')
     for seq in data_set:
       src = [seq]
-      [enc_output,
-       enc_final_state,
-       enc_dot_value_out,
-       enc_add_value_out,
-       ] = session.run([encoder_output if has_attention else tf.no_op(),
-                        encoder_final_state,
-                        encoder_dot_value_out if has_attention else tf.no_op(),
-                        encoder_add_value_out if has_attention else tf.no_op()
-                        ], {source_input:src})
-
+      enc_output, enc_final_state, enc_dot_value_out, enc_add_value_out = None, None, None, None
+      if has_attention:
+        [enc_output,
+         enc_final_state,
+         enc_dot_value_out,
+         enc_add_value_out,
+         ] = session.run([encoder_output,
+                          encoder_final_state,
+                          encoder_dot_value_out,
+                          encoder_add_value_out
+                          ], {source_input:src})
+      else:
+        [enc_final_state] = session.run([encoder_final_state], {source_input: src})
+      feed_dict = {}
       if has_attention:
         feed_dict = {encoder_output_in: enc_output,
                      encoder_add_value_in: enc_add_value_out,
                      encoder_dot_value_in: enc_dot_value_out
                      }
-      else:
-        feed_dict = {}
 
       output = [_BOS_ID]
       decoder_state, tgt_gen_state = None, None
@@ -923,14 +921,41 @@ def inference(FLAGS):
           if has_gen_layers:
             feed_dict[tgt_gen_init_state] = tgt_gen_state
 
-        [enc_attention,
-         pred,
-         decoder_state,
-         tgt_gen_state] = session.run([attention if has_attention else tf.no_op(),
-                                       preds,
-                                       decoder_final_state,
-                                       tgt_gen_final_state if has_gen_layers else tf.no_op()
-                                       ], feed_dict)
+        if has_attention and has_gen_layers:
+          [enc_attention,
+           pred,
+           decoder_state,
+           tgt_gen_state
+           ] = session.run([attention,
+                            preds,
+                            decoder_final_state,
+                            tgt_gen_final_state,
+                            ], feed_dict)
+        elif has_attention and not has_gen_layers:
+          [enc_attention,
+           pred,
+           decoder_state,
+           ] = session.run([attention,
+                            preds,
+                            decoder_final_state,
+                            ], feed_dict)
+        elif not has_attention and has_gen_layers:
+          [pred,
+           decoder_state,
+           tgt_gen_state
+           ] = session.run([preds,
+                            decoder_final_state,
+                            tgt_gen_final_state,
+                            ], feed_dict)
+        else:
+          [pred,
+           decoder_state,
+           ] = session.run([preds,
+                            decoder_final_state,
+                            ], feed_dict)
+
+
+
         output.append(pred[0])
 
       out_words = [tgt_id2word[idx] for idx in output[1:-1]]
