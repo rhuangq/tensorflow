@@ -16,9 +16,8 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
-#TODO: make it into regular TF lib?
-import seq2seq_attention
-import data_utils_qnn
+from tensorflow.models.rnn.translate import seq2seq_attention
+from tensorflow.models.rnn.translate import data_utils_qnn
 _buckets = data_utils_qnn._buckets
 _EOS_ID = data_utils_qnn._EOS_ID
 _BOS_ID = data_utils_qnn._BOS_ID

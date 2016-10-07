@@ -17,8 +17,7 @@ from tensorflow.python.ops import tensor_array_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
-#TODO: bazel it so others can import it
-import data_utils_qnn
+from tensorflow.models.rnn.translate import data_utils_qnn
 _buckets = data_utils_qnn._buckets
 _EOS_ID = data_utils_qnn._EOS_ID
 _BOS_ID = data_utils_qnn._BOS_ID
@@ -744,8 +743,6 @@ def train(FLAGS):
   tgt_train = os.path.join(FLAGS.data_dir, "target.train")
   src_dev = os.path.join(FLAGS.data_dir, "source.valid")
   tgt_dev = os.path.join(FLAGS.data_dir, "target.valid")
-  random_numbers = [random.Random(FLAGS.random_seed * (i + 1)) for i in xrange(len(_buckets))]
-
 
   with tf.Graph().as_default(), \
        tf.Session(config=tf.ConfigProto(allow_soft_placement=FLAGS.soft_placement,
@@ -762,24 +759,7 @@ def train(FLAGS):
     tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
     graph_def_file = os.path.join(FLAGS.output_dir, "nmt.pb")
 
-    train_set = data_utils_qnn.read_train_data(src_train, tgt_train, FLAGS.max_train_data_size)
-    train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
-    train_total_size = sum(train_bucket_sizes)
-    print("Total %d sequences in the training data" % train_total_size)
-    # A bucket scale is a list of increasing numbers from 0 to 1 that we'll use
-    # to select a bucket. Length of [scale[i], scale[i+1]] is proportional to
-    # the size if i-th training bucket, as used later.
-    train_buckets_scale = [sum(train_bucket_sizes[:i + 1]) / train_total_size
-                           for i in xrange(len(train_bucket_sizes))]
-    print(train_buckets_scale)
-
-    train_buckets_scale_ws = None
-    if warm_start:
-      train_bucket_sizes_ws = [train_bucket_sizes[i]*1.0/(2**i) for i in xrange(len(train_bucket_sizes))]
-      train_total_size_ws = sum(train_bucket_sizes_ws)
-      train_buckets_scale_ws = [sum(train_bucket_sizes_ws[:i + 1]) / train_total_size_ws for i in xrange(len(train_bucket_sizes_ws))]
-      print(train_buckets_scale_ws)
-
+    train_set = data_utils_qnn.TrainData(src_train, tgt_train, FLAGS.batch_size, FLAGS.random_seed)
     dev_set = data_utils_qnn.read_dev_data(src_dev, tgt_dev)
     print("Total %d sequences in the development data" %(len(dev_set)))
 
@@ -805,7 +785,8 @@ def train(FLAGS):
         _, dev_ppl, dev_loss = dev_model.report_progress(session)
         if summary_writer:
           summary_writer.add_summary(tf.Summary(value=[tf.Summary.Value(tag="Error", simple_value=dev_loss)]), iters)
-        print("Has run training on %d minibatches, the PPL/Loss on the dev set is %.3f , %.3f" %(iters, dev_ppl, dev_loss))
+        print("Has run training on %d minibatches, in epoch %d, the PPL/Loss on the dev set is %.3f , %.3f"
+              %(iters, train_set.epoch(), dev_ppl, dev_loss), flush=True)
         dev_model.reset_stats()
         if len(dev_losses) > 1 and (dev_losses[-1] - dev_loss) / dev_losses[-1] < 0.01:
           print("The learning rate is reduced to %f" %(trn_model.reduce_learning_rate(session)))
@@ -817,12 +798,9 @@ def train(FLAGS):
           best_loss = dev_loss
           best_ckpt = curr_ckpt
 
-      if iters > FLAGS.max_iters: break
+      if iters >= FLAGS.max_iters: break
 
-      src_input, tgt_input = data_utils_qnn.get_minibatch(trn_config.batch_size,
-                                                          train_set,
-                                                          train_buckets_scale_ws if warm_start and iters < FLAGS.check_iters else train_buckets_scale,
-                                                          random_numbers)
+      src_input, tgt_input = train_set.get_minibatch(True if warm_start and iters < FLAGS.check_iters else False)
       trn_model.run_minibatch(session, src_input, tgt_input)
 
   print("the best performing model is "+best_ckpt)

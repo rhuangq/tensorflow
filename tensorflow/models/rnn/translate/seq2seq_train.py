@@ -6,7 +6,7 @@ import sys
 import os
 
 import tensorflow as tf
-import seq2seq_attention
+from tensorflow.models.rnn.translate import seq2seq_attention
 
 logging = tf.logging
 
@@ -44,11 +44,6 @@ tf.app.flags.DEFINE_integer("attention_dim", 256, "attention vector dimension wh
 #data
 tf.app.flags.DEFINE_string("data_dir", "data", "Data directory, assume {source|target}.{train|valid|vocab} files (generated in the QNN setup)")
 tf.app.flags.DEFINE_string("output_dir", "output", "Training directory.")
-
-tf.app.flags.DEFINE_boolean("decode", False,
-                            "Set to True for interactive decoding.")
-tf.app.flags.DEFINE_boolean("self_test", False,
-                            "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False,
                             "Train using fp16 instead of fp32.")
 

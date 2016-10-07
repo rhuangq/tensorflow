@@ -6,7 +6,7 @@ import sys
 import os
 
 import tensorflow as tf
-import seq2seq_attention
+from tensorflow.models.rnn.translate import seq2seq_attention
 
 logging = tf.logging
 

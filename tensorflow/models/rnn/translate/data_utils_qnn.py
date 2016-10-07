@@ -11,10 +11,10 @@ import tensorflow as tf
 
 #TODO: set it through command line or config files?
 # MT
-_buckets = [(5, 10), (10, 15), (15, 20), (20, 25), (25, 30), (30, 35), (35, 40), (40, 45), (52, 52)]
+#_buckets = [(5, 10), (10, 15), (15, 20), (20, 25), (25, 30), (30, 35), (35, 40), (40, 45), (52, 52)]
 
 # G2P
-#_buckets = [(5, 5), (7, 7), (9, 9), (11, 11), (15, 15), (20, 20), (32, 32)]
+_buckets = [(5, 5), (7, 7), (9, 9), (11, 11), (15, 15), (20, 20), (32, 32)]
 
 # this is from the vocab file, it's ok since we never change these values
 _UNK_ID = 0
@@ -171,4 +171,124 @@ def get_minibatch_dev(batch_size, data):
       tgt_inputs.append(tgt+tgt_pad)
 
     yield src_inputs,tgt_inputs
+
+class TrainData(object):
+  def __init__(self, source_path, target_path, batch_size, seed=8759, max_size=None):
+    """Read training data from source and target files and put into buckets.
+
+    Args:
+      source_path: path to the files with token-ids for the source language.
+      target_path: path to the file with token-ids for the target language;
+        it must be aligned with the source file: n-th line contains the desired
+        output for n-th line from the source_path.
+      All the data pre-processing must have been done before-hand (including BOS/EOS, reverse etc)
+      max_size: maximum number of lines to read, all other will be ignored;
+        if 0 or None, data files will be read completely (no limit).
+
+    Returns:
+      data_set: a list of length len(_buckets); data_set[n] contains a list of
+        (source, target) pairs read from the provided data files that fit
+        into the n-th bucket, i.e., such that len(source) < _buckets[n][0] and
+        len(target) < _buckets[n][1]; source and target are lists of token-ids.
+    """
+    self._data_set = [[] for _ in _buckets]
+    self._random_number = random.Random(seed)
+    self._batch_size = batch_size
+    with tf.gfile.GFile(source_path, mode="r") as source_file:
+      with tf.gfile.GFile(target_path, mode="r") as target_file:
+        source, target = source_file.readline(), target_file.readline()
+        counter = 0
+        while source and target and (not max_size or counter < max_size):
+          counter += 1
+          if counter % 100000 == 0:
+            print("  reading data line %d" % counter)
+            sys.stdout.flush()
+
+          source_ids = [int(x) for x in source.split()]
+          target_ids = [int(x) for x in target.split()]
+
+          for bucket_id, (source_size, target_size) in enumerate(_buckets):
+            if len(source_ids) <= source_size and len(target_ids) <= target_size:
+              self._data_set[bucket_id].append([source_ids, target_ids])
+              break
+          source, target = source_file.readline(), target_file.readline()
+
+
+    train_bucket_sizes = [len(self._data_set[b]) for b in xrange(len(self._data_set))]
+    train_total_size = sum(train_bucket_sizes)
+    print("Total %d sequences in the training data" % train_total_size)
+    # A bucket scale is a list of increasing numbers from 0 to 1 that we'll use
+    # to select a bucket. Length of [scale[i], scale[i+1]] is proportional to
+    # the size in i-th training bucket, as used later.
+
+    train_bucket_sizes_ws = [train_bucket_sizes[i] * 1.0 / (2 ** i) for i in xrange(len(train_bucket_sizes))]
+    train_total_size_ws = sum(train_bucket_sizes_ws)
+    self._buckets_scale_ws = [sum(train_bucket_sizes_ws[:i + 1]) / train_total_size_ws for i in
+                              xrange(len(train_bucket_sizes_ws))]
+    print(self._buckets_scale_ws)
+    self._cur_seq_idx = [0] * len(self._data_set)
+
+    self._total_minibatch_indices = []
+    for i, size in enumerate(train_bucket_sizes):
+      self._total_minibatch_indices.extend([(i, j * self._batch_size) for j in xrange(int(size / self._batch_size))])
+
+    self._minibatch_idx = 0
+
+    self._shuffle()
+    self._bucket_sizes = train_bucket_sizes
+    self._epoch = 0
+    self._warmedup = False
+
+  def _shuffle(self):
+    for i in range(len(self._data_set)):
+      self._random_number.shuffle(self._data_set[i])
+    self._random_number.shuffle(self._total_minibatch_indices)
+
+  def get_minibatch(self, in_warmup = False):
+    bucket_id = -1
+    if in_warmup and not self._warmedup:
+      max_draw = len(self._bucket_sizes)
+      draw_idx = 0
+      while draw_idx < max_draw and bucket_id == -1:
+        random_thresh = np.random.random_sample()
+        draw_idx += 1
+        for i, scale in enumerate(self._buckets_scale_ws):
+          if scale >= random_thresh and self._cur_seq_idx[i] + self._batch_size < self._bucket_sizes[i]:
+            bucket_id = i
+            break
+
+      if bucket_id >= 0:
+        src_inputs, tgt_inputs = self._get_minibatch_data(bucket_id, self._cur_seq_idx[bucket_id])
+        self._cur_seq_idx[bucket_id] += self._batch_size
+        return src_inputs, tgt_inputs
+      else:
+        self._warmedup = True
+
+    # regular request
+    bucket_id, minibatch_pos = self._total_minibatch_indices[self._minibatch_idx]
+    src_inputs, tgt_inputs = self._get_minibatch_data(bucket_id, minibatch_pos)
+    self._minibatch_idx += 1
+    if self._minibatch_idx >= len(self._total_minibatch_indices):
+      self._epoch += 1
+      self._warmedup = True
+      self._minibatch_idx = 0
+      self._shuffle()
+
+    return src_inputs, tgt_inputs
+
+  def _get_minibatch_data(self, bucket_id, start):
+    src_size, tgt_size = _buckets[bucket_id]
+    src_inputs, tgt_inputs = [], []
+    for i in range(self._batch_size):
+      idx = i + start
+      curr_src, curr_tgt = self._data_set[bucket_id][idx]
+      src_pad = [_EOS_ID] * (src_size - len(curr_src))
+      src_inputs.append(curr_src + src_pad)
+      tgt_pad = [_EOS_ID] * (tgt_size - len(curr_tgt))
+      tgt_inputs.append(curr_tgt + tgt_pad)
+
+    return src_inputs, tgt_inputs
+
+  def epoch(self):
+    return self._epoch + 1
 
