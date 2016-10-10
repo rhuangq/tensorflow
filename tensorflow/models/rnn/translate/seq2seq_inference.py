@@ -18,7 +18,7 @@ from tensorflow.python.ops import variable_scope as vs
 
 from tensorflow.models.rnn.translate import seq2seq_attention
 from tensorflow.models.rnn.translate import data_utils_qnn
-_buckets = data_utils_qnn._buckets
+
 _EOS_ID = data_utils_qnn._EOS_ID
 _BOS_ID = data_utils_qnn._BOS_ID
 _UNK_ID = data_utils_qnn._UNK_ID
