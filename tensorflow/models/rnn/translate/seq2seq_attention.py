@@ -18,7 +18,6 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
 from tensorflow.models.rnn.translate import data_utils_qnn
-_buckets = data_utils_qnn._buckets
 _EOS_ID = data_utils_qnn._EOS_ID
 _BOS_ID = data_utils_qnn._BOS_ID
 _UNK_ID = data_utils_qnn._UNK_ID
@@ -741,7 +740,9 @@ def train(FLAGS):
   """run model training"""
 
   trn_config = create_model_config(FLAGS)
-  if trn_config.max_length < _buckets[-1][0] or trn_config.max_length < _buckets[-1][1]:
+  buckets = data_utils_qnn.parse_bucket(FLAGS.buckets, FLAGS.preset_buckets)
+
+  if trn_config.max_length < buckets[-1][0] or trn_config.max_length < buckets[-1][1]:
     raise ValueError("the maximum sequence must no less than the possible bucket size")
 
   warm_start = FLAGS.warm_start
@@ -768,8 +769,8 @@ def train(FLAGS):
     tf.train.write_graph(session.graph.as_graph_def(), FLAGS.output_dir, "nmt.pb")
     graph_def_file = os.path.join(FLAGS.output_dir, "nmt.pb")
 
-    train_set = data_utils_qnn.TrainData(src_train, tgt_train, FLAGS.batch_size, FLAGS.random_seed)
-    dev_set = data_utils_qnn.read_dev_data(src_dev, tgt_dev)
+    train_set = data_utils_qnn.TrainData(buckets, src_train, tgt_train, FLAGS.batch_size, FLAGS.random_seed)
+    dev_set = data_utils_qnn.read_dev_data(buckets, src_dev, tgt_dev)
     print("Total %d sequences in the development data" %(len(dev_set)))
 
     #TODO: write training stats for tensorboard
@@ -795,7 +796,7 @@ def train(FLAGS):
         if summary_writer:
           summary_writer.add_summary(tf.Summary(value=[tf.Summary.Value(tag="Error", simple_value=dev_loss)]), iters)
         print("Has run training on %d minibatches, in epoch %d, the PPL/Loss on the dev set is %.3f , %.3f"
-              %(iters, train_set.epoch(), dev_ppl, dev_loss), flush=True)
+              %(iters, train_set.epoch(), dev_ppl, dev_loss))
         dev_model.reset_stats()
         if len(dev_losses) > 1 and (dev_losses[-1] - dev_loss) / dev_losses[-1] < 0.01:
           print("The learning rate is reduced to %f" %(trn_model.reduce_learning_rate(session)))

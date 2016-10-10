@@ -45,8 +45,9 @@ tf.app.flags.DEFINE_integer("readout_dim", 256, "the output dimension for target
 #data
 tf.app.flags.DEFINE_string("data_dir", "data", "Data directory, assume {source|target}.{train|valid|vocab} files (generated in the QNN setup)")
 tf.app.flags.DEFINE_string("output_dir", "output", "Training directory.")
-tf.app.flags.DEFINE_boolean("use_fp16", False,
-                            "Train using fp16 instead of fp32.")
+tf.app.flags.DEFINE_boolean("use_fp16", False, "Train using fp16 instead of fp32.")
+tf.app.flags.DEFINE_string("buckets", None, "bucket definition, the bucket size def should be 'src-tgt', use comma to concatenate ascending buckets")
+tf.app.flags.DEFINE_string("preset_buckets", "en-fr-mt", "use the predefined 'en-fr-mt' bucket definition. '--buckets' has higher priority over this option")
 
 #multi-device computation, logging
 tf.app.flags.DEFINE_boolean("soft_placement", True, "Allow soft placement of computation on different devices")
