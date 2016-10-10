@@ -23,6 +23,7 @@ tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
 tf.app.flags.DEFINE_integer("attention_dim", 256, "attention vector dimension when using attention.")
+tf.app.flags.DEFINE_integer("readout_dim", 256, "the output dimension for target generation")
 
 #data
 tf.app.flags.DEFINE_string("model_ckpt", None, "the ckpt model file, must set")

@@ -224,6 +224,7 @@ class ModelConfig(dict):
     # 0: simple encoder-decoder; 1: global attention; 2: recurrent global attention
     self.attention_type = 0
     self.attention_dim = 256
+    self.readout_dim = 256
 
     self['batch_size'] = self.batch_size
     self['embed_size'] = self.embed_size
@@ -244,6 +245,7 @@ class ModelConfig(dict):
     self['mode'] = self.mode
     self['attention_type'] = self.attention_type
     self['attention_dim'] = self.attention_dim
+    self['readout_dim'] = self.readout_dim
 
   def __getattr__(self, item):
     if item in self:
@@ -272,6 +274,7 @@ def create_nmt_graph(config):
   attention_type = config.attention_type
   attention_dim = config.attention_dim if attention_type != 0 else num_cells
   dot_dim = num_cells
+  readout_dim = config.readout_dim
 
   source_input = tf.placeholder(tf.int32, [batch_size, None], name="source_input")
   target_input = tf.placeholder(tf.int32, [batch_size, None], name="target_input")
@@ -356,9 +359,11 @@ def create_nmt_graph(config):
     else:
       tgt_gen_outputs = s2s_outputs
     output = tf.reshape(tgt_gen_outputs, [-1, attention_dim])
-    softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
+    linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
+    linear_output = tf.matmul(output, linear_w)
+    softmax_w = tf.get_variable("softmax_w", [readout_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
-    logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="prediction")
+    logits = tf.add(tf.matmul(linear_output, softmax_w), softmax_b, name="prediction")
 
   return dict(
     source_input=source_input,
@@ -385,6 +390,7 @@ def create_recurrent_attention_graph(config):
   assert attention_type == 2
   attention_dim = config.attention_dim if attention_type != 0 else num_cells
   dot_dim = num_cells
+  readout_dim = config.readout_dim
 
   source_input = tf.placeholder(tf.int32, [batch_size, None], name="source_input")
   target_input = tf.placeholder(tf.int32, [batch_size, None], name="target_input")
@@ -533,6 +539,7 @@ def _create_decoder_eval_graph(config):
   attention_type = config.attention_type
   attention_dim = config.attention_dim if attention_type != 0 else num_cells
   dot_dim = num_cells
+  readout_dim = config.readout_dim
 
   target_input = tf.placeholder(tf.int32, [batch_size], name="__QNNI__target_input")
 
@@ -601,9 +608,11 @@ def _create_decoder_eval_graph(config):
       tgt_gen_output = s2s_outputs
 
     output = tf.reshape(tgt_gen_output, [-1, attention_dim])
-    softmax_w = tf.get_variable("softmax_w", [attention_dim, target_vocab_size], dtype=dtype)
+    linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
+    linear_output = tf.matmul(output, linear_w)
+    softmax_w = tf.get_variable("softmax_w", [readout_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
-    logits = tf.add(tf.matmul(output, softmax_w), softmax_b, name="__QNNO__prediction")
+    logits = tf.add(tf.matmul(linear_output, softmax_w), softmax_b, name="__QNNO__prediction")
 
 
 
