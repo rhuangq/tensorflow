@@ -1,3 +1,5 @@
+# Copyright (c) 2016 Apple Inc. All rights reserved.
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -6,7 +8,7 @@ import sys
 import os
 
 import tensorflow as tf
-from tensorflow.models.rnn.translate import seq2seq_attention
+from tensorflow.contrib.apple.nmt import seq2seq_attention
 
 logging = tf.logging
 
