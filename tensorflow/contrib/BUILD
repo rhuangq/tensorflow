@@ -37,7 +37,6 @@ py_library(
         "//tensorflow/contrib/tensor_forest:tensor_forest_py",
         "//tensorflow/contrib/tensor_forest/hybrid:ops_lib",
         "//tensorflow/contrib/tensorboard",
-        "//tensorflow/contrib/apple",
         "//tensorflow/contrib/testing:testing_py",
         "//tensorflow/contrib/training:training_py",
         "//tensorflow/contrib/util:util_py",
