@@ -138,6 +138,7 @@ filegroup(
         "//tensorflow/contrib/tfprof/tools/tfprof/internal:all_files",
         "//tensorflow/contrib/training:all_files",
         "//tensorflow/contrib/util:all_files",
+        "//tensorflow/contrib/apple/nmt:all_files",
         "//tensorflow/core:all_files",
         "//tensorflow/core/debug:all_files",
         "//tensorflow/core/distributed_runtime:all_files",
