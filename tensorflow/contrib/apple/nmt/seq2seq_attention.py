@@ -134,6 +134,8 @@ def GlobalAttention(
    This function can be used in batch or called per step.
   """
 
+  outputs = None
+  weights = []
   with vs.variable_scope(scope or "GlobalAttention", initializer=initializer):
     bs, _, sd = source_inputs.get_shape()
     if bs != batch_size or sd != src_dim:
@@ -162,10 +164,10 @@ def GlobalAttention(
     tgt_add_values = tf.reshape(tf.add(tf.matmul(tgt_input_rs, tgt_add_trans_w), tgt_add_trans_b),
                                 [batch_size, -1, out_dim])
 
+    out_padding = None
     if not single_step:
       out_padding = tf.zeros([tf.shape(target_inputs)[1], out_dim])
-    outputs = None
-    weights = []
+
     for batch_idx in xrange(batch_size):
       #extract one sequence
       src_dot_value = tf.squeeze(tf.slice(src_dot_values, [batch_idx, 0, 0], [1, src_seq_lengths[batch_idx], -1]), [0])
@@ -360,8 +362,10 @@ def create_nmt_graph(config):
     else:
       tgt_gen_outputs = s2s_outputs
     output = tf.reshape(tgt_gen_outputs, [-1, attention_dim])
-    linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
-    linear_output = tf.matmul(output, linear_w)
+    linear_output = output
+    if attention_dim != readout_dim:
+      linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
+      linear_output = tf.matmul(output, linear_w)
     softmax_w = tf.get_variable("softmax_w", [readout_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
     logits = tf.add(tf.matmul(linear_output, softmax_w), softmax_b, name="prediction")
@@ -438,7 +442,7 @@ def create_recurrent_attention_graph(config):
 
   with vs.variable_scope("decoder"):
     with vs.variable_scope("RNN"):
-      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, 1.0 if mode != 0 else keep_rate)
       decoder_output, decoder_final_state = decoder_cell(tf.reshape(
         tf.slice(s2s_tgt_input, [0,0,0], [-1,1,-1]), [batch_size, num_cells]), decoder_init_state)
   s2s_outputs, _ = GlobalAttention(batch_size,
@@ -609,8 +613,10 @@ def _create_decoder_eval_graph(config):
       tgt_gen_output = s2s_outputs
 
     output = tf.reshape(tgt_gen_output, [-1, attention_dim])
-    linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
-    linear_output = tf.matmul(output, linear_w)
+    linear_output = output
+    if attention_dim != readout_dim:
+      linear_w = tf.get_variable("linear_w", [attention_dim, readout_dim], dtype=dtype)
+      linear_output = tf.matmul(output, linear_w)
     softmax_w = tf.get_variable("softmax_w", [readout_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
     logits = tf.add(tf.matmul(linear_output, softmax_w), softmax_b, name="__QNNO__prediction")
