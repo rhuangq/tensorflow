@@ -20,18 +20,38 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope as vs
 
 from tensorflow.contrib.apple.nmt import data_utils_qnn
+from tensorflow.contrib.rnn.python.ops import rnn_cell as rnn_cell_more
 _EOS_ID = data_utils_qnn._EOS_ID
 _BOS_ID = data_utils_qnn._BOS_ID
 _UNK_ID = data_utils_qnn._UNK_ID
 
 
-def _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate):
-  """a helper function creates multi-layer RNNs"""
+def _create_rnn_multi_cell(rnn_type, num_cells, num_layers, keep_rate):
+  """a helper function creates multi-layer RNNs, with some
+   Args:
+     rnn_type: valid choice is 'gru', 'lstm', 'lstm_ph' (peep_hole), 'lstm_ln' (layer normalized)
+     num_cells: number of cell units in the RNN
+     num_layers: how many layers
+     keep_rate: less than 1 will trigger dropout
+     layer_norm: True/False, only available for LSTM
+     peep_hole: True/False: add peep hole connection in LSTM
 
-  if use_lstm:
-    cell = tf.nn.rnn_cell.LSTMCell(num_cells)
-  else:
+   return:
+      a recurrent cell object
+  """
+
+  cell = None
+  if rnn_type == 'lstm':
+    cell = tf.nn.rnn_cell.LSTMCell(num_cells, use_peepholes=False)
+  elif rnn_type == 'lstm_ph':
+    cell = tf.nn.rnn_cell.LSTMCell(num_cells, use_peepholes=True)
+  elif rnn_type == 'lstm_ln' :
+    cell = rnn_cell_more.LayerNormBasicLSTMCell(num_cells)
+  elif rnn_type == 'gru':
     cell = tf.nn.rnn_cell.GRUCell(num_cells)
+  else:
+    raise ValueError("unrecognized rnn_type option %s, supported are: 'lstm', 'lstm_ph', 'lstm_ln', 'gru'. ")
+
   if keep_rate != 1.0:
     cell = tf.nn.rnn_cell.DropoutWrapper(cell, input_keep_prob=keep_rate)
   if num_layers > 1:
@@ -73,7 +93,7 @@ class SequenceLength(object):
 def Seq2SeqRnn(inputs,
                num_cells,
                num_layers,
-               use_lstm=False,
+               rnn_type='lstm',
                use_birnn=False,
                seq_lengths=None,
                init_state=None,
@@ -95,11 +115,11 @@ def Seq2SeqRnn(inputs,
       else:
         init_state_forward = init_state
 
-    forward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+    forward_cell = _create_rnn_multi_cell(rnn_type, num_cells, num_layers, keep_rate)
     if init_state_forward is None:
       init_state_forward = forward_cell.zero_state(batch_size, dtype)
     if use_birnn:
-      backward_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
+      backward_cell = _create_rnn_multi_cell(rnn_type, num_cells, num_layers, keep_rate)
       if init_state_backward is None:
         init_state_backward = backward_cell.zero_state(batch_size, dtype)
       outputs, final_state = tf.nn.bidirectional_dynamic_rnn(forward_cell, backward_cell,
@@ -208,7 +228,7 @@ class ModelConfig(dict):
     self.embed_size = 128
     self.num_layers = 3
     self.num_gen_layers = 3
-    self.use_lstm = True
+    self.rnn_type = 'lstm'
     self.use_birnn = False
     self.source_vocab_size = 100
     self.target_vocab_size = 100
@@ -233,7 +253,7 @@ class ModelConfig(dict):
     self['embed_size'] = self.embed_size
     self['num_layers'] = self.num_layers
     self['num_gen_layers'] = self.num_gen_layers
-    self['use_lstm'] = self.use_lstm
+    self['rnn_type'] = self.rnn_type
     self['use_birnn'] = self.use_birnn
     self['source_vocab_size'] = self.source_vocab_size
     self['target_vocab_size'] = self.target_vocab_size
@@ -270,7 +290,7 @@ def create_nmt_graph(config):
   num_gen_layers = config.num_gen_layers
   dtype = config.dtype
   max_length = config.max_length
-  use_lstm = config.use_lstm
+  rnn_type = config.rnn_type
   use_birnn = config.use_birnn
   keep_rate = config.keep_rate
   mode = config.mode
@@ -299,7 +319,7 @@ def create_nmt_graph(config):
     encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
                                                       num_cells,
                                                       num_layers,
-                                                      use_lstm=use_lstm,
+                                                      rnn_type=rnn_type,
                                                       use_birnn=use_birnn,
                                                       seq_lengths=src_length,
                                                       init_state=encoder_init_state,
@@ -327,7 +347,7 @@ def create_nmt_graph(config):
     decoder_outputs, decoder_final_state = Seq2SeqRnn(s2s_tgt_input,
                                                       num_cells,
                                                       num_layers,
-                                                      use_lstm=use_lstm,
+                                                      rnn_type=rnn_type,
                                                       use_birnn=False,
                                                       seq_lengths=tgt_length,
                                                       init_state=decoder_init_state,
@@ -353,7 +373,7 @@ def create_nmt_graph(config):
 
   with vs.variable_scope("output"):
     if num_gen_layers > 0:
-      tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers,
+      tgt_gen_cell = _create_rnn_multi_cell(rnn_type, attention_dim, num_gen_layers,
                                             keep_rate=1.0 if mode != 0 else config.keep_rate)
       tgt_gen_init_state = None
       tgt_gen_outputs, tgt_gen_final_state = tf.nn.dynamic_rnn(tgt_gen_cell, s2s_outputs, tgt_length,
@@ -387,7 +407,7 @@ def create_recurrent_attention_graph(config):
   num_gen_layers = config.num_gen_layers
   dtype = config.dtype
   max_length = config.max_length
-  use_lstm = config.use_lstm
+  rnn_type = config.rnn_type
   use_birnn = config.use_birnn
   keep_rate = config.keep_rate
   mode = config.mode
@@ -417,7 +437,7 @@ def create_recurrent_attention_graph(config):
     encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
                                                       num_cells,
                                                       num_layers,
-                                                      use_lstm=use_lstm,
+                                                      rnn_type=rnn_type,
                                                       use_birnn=use_birnn,
                                                       seq_lengths=src_length,
                                                       init_state=encoder_init_state,
@@ -442,7 +462,7 @@ def create_recurrent_attention_graph(config):
 
   with vs.variable_scope("decoder"):
     with vs.variable_scope("RNN"):
-      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, 1.0 if mode != 0 else keep_rate)
+      decoder_cell = _create_rnn_multi_cell(rnn_type, num_cells, num_layers, 1.0 if mode != 0 else keep_rate)
       decoder_output, decoder_final_state = decoder_cell(tf.reshape(
         tf.slice(s2s_tgt_input, [0,0,0], [-1,1,-1]), [batch_size, num_cells]), decoder_init_state)
   s2s_outputs, _ = GlobalAttention(batch_size,
@@ -487,7 +507,7 @@ def _create_encoder_eval_graph(config):
   num_cells = config.embed_size
   num_layers = config.num_layers
   dtype = config.dtype
-  use_lstm = config.use_lstm
+  rnn_type = config.rnn_type
   use_birnn = config.use_birnn
   keep_rate = 1.0
   attention_type = config.attention_type
@@ -507,7 +527,7 @@ def _create_encoder_eval_graph(config):
     encoder_outputs, encoder_final_state = Seq2SeqRnn(s2s_src_input,
                                                       num_cells,
                                                       num_layers,
-                                                      use_lstm=use_lstm,
+                                                      rnn_type=rnn_type,
                                                       use_birnn=use_birnn,
                                                       seq_lengths=seq_lengths,
                                                       init_state=encoder_init_state,
@@ -538,7 +558,7 @@ def _create_decoder_eval_graph(config):
   num_layers = config.num_layers
   num_gen_layers = config.num_gen_layers
   dtype = config.dtype
-  use_lstm = config.use_lstm
+  rnn_type = config.rnn_type
   use_birnn = config.use_birnn
   keep_rate = 1.0
   attention_type = config.attention_type
@@ -554,16 +574,17 @@ def _create_decoder_eval_graph(config):
 
   with vs.variable_scope("decoder"):
     with vs.variable_scope("RNN"):
-      decoder_cell = _create_rnn_multi_cell(use_lstm, num_cells, num_layers, keep_rate)
-      if use_lstm:
-        state_size = [num_layers, 2, batch_size, num_cells]
-      else:
+      decoder_cell = _create_rnn_multi_cell(rnn_type, num_cells, num_layers, keep_rate)
+      if rnn_type == 'gru':
         state_size = [num_layers, batch_size, num_cells]
-      decoder_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__decoder_state")
-      if use_lstm:
-        decoder_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(decoder_init_state_ph, axis=0)))
       else:
+        state_size = [num_layers, 2, batch_size, num_cells]
+      decoder_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__decoder_state")
+
+      if rnn_type == 'gru':
         decoder_init_state = tuple(tf.unpack(decoder_init_state_ph, axis=0))
+      else:
+        decoder_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(decoder_init_state_ph, axis=0)))
       decoder_output, decoder_final_state = decoder_cell(s2s_tgt_input, decoder_init_state)
       decoder_final_state = tf.identity(decoder_final_state, name="__QNNO__decoder_state")
 
@@ -597,16 +618,18 @@ def _create_decoder_eval_graph(config):
   with vs.variable_scope("output"):
     if num_gen_layers > 0:
       with vs.variable_scope("RNN"):
-        tgt_gen_cell = _create_rnn_multi_cell(use_lstm, attention_dim, num_gen_layers, keep_rate=keep_rate)
-        if use_lstm:
-          state_size = [num_gen_layers, 2, batch_size, attention_dim]
-        else:
+        tgt_gen_cell = _create_rnn_multi_cell(rnn_type, attention_dim, num_gen_layers, keep_rate=keep_rate)
+        if rnn_type == 'gru':
           state_size = [num_gen_layers, batch_size, attention_dim]
-        tgt_gen_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__target_gen_state")
-        if use_lstm:
-          tgt_gen_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(tgt_gen_init_state_ph, axis=0)))
         else:
+          state_size = [num_gen_layers, 2, batch_size, attention_dim]
+        tgt_gen_init_state_ph = tf.placeholder_with_default(tf.zeros(state_size), state_size, name="__QNNI__target_gen_state")
+
+        if rnn_type == 'gru':
           tgt_gen_init_state = tuple(tf.unpack(tgt_gen_init_state_ph, axis=0))
+        else:
+          tgt_gen_init_state = tuple(tuple(tf.unpack(i, axis=0)) for i in tuple(tf.unpack(tgt_gen_init_state_ph, axis=0)))
+
         tgt_gen_output, tgt_gen_final_state = tgt_gen_cell(s2s_outputs, tgt_gen_init_state)
       tgt_gen_final_state = tf.identity(tgt_gen_final_state, name="__QNNO__target_gen_state")
     else:

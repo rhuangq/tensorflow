@@ -37,7 +37,7 @@ tf.app.flags.DEFINE_integer("num_layers", 3, "Number of RNN layers in the encode
 tf.app.flags.DEFINE_integer("num_gen_layers", 3, "Number of RNN layers in the target generation model.")
 tf.app.flags.DEFINE_integer("source_vocab_size", 100, "source vocabulary size.")
 tf.app.flags.DEFINE_integer("target_vocab_size", 100, "target vocabulary size.")
-tf.app.flags.DEFINE_boolean("use_lstm", True, "Use LSTM or GRU as the RNN layers")
+tf.app.flags.DEFINE_string("rnn_type", 'lstm', "RNN types, one of 'gru', 'lstm', 'lstm_ph' (peep hole), 'lstm_ln' (layer normalized).")
 tf.app.flags.DEFINE_boolean("use_birnn", True, "use BiRNN in the encoder")
 tf.app.flags.DEFINE_float("keep_rate", 1.0, "value less than 1 will turn on dropouts")
 tf.app.flags.DEFINE_integer("attention_type", 1, "attention type to use. 0: basic encoder-decoder; 1: global attention; 2: recurrent global attention")
