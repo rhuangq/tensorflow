@@ -1,0 +1,19 @@
+#!/bin/bash
+
+set -e
+set -x
+
+cp bazel-bin/tensorflow/libtensorflow_all.so /usr/local/lib/libtensorflow_all.so
+header_path=~/projects/install/tmp
+mkdir -p $header_path
+rsync -avz --delete tensorflow $header_path/
+find $header_path/tensorflow -type f ! -name "*.h" -delete
+cp bazel-genfiles/tensorflow/core/framework/*.h  $header_path/tensorflow/core/framework
+cp bazel-genfiles/tensorflow/core/kernels/*.h  $header_path/tensorflow/core/kernels
+cp bazel-genfiles/tensorflow/core/lib/core/*.h  $header_path/tensorflow/core/lib/core
+cp bazel-genfiles/tensorflow/core/protobuf/*.h  $header_path/tensorflow/core/protobuf
+cp bazel-genfiles/tensorflow/core/util/*.h  $header_path/tensorflow/core/util
+cp bazel-genfiles/tensorflow/cc/ops/*.h  $header_path/tensorflow/cc/ops
+
+rsync -avz --delete third_party $header_path/
+rm -rf $header_path/third_party/py $header_path/third_party/avro

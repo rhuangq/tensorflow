@@ -228,3 +228,14 @@ cc_binary(
         "//tensorflow/core:tensorflow",
     ],
 )
+
+cc_binary(
+    name = "libtensorflow_all.so",
+    linkshared = 1,
+    linkopts = ["-Wl"],
+    deps = [
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:tensorflow",
+    ],
+)
