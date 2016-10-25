@@ -62,7 +62,7 @@ boolean MemEmptyOutputBuffer(j_compress_ptr cinfo) {
   }
   dest->pub.next_output_byte = dest->buffer;
   dest->pub.free_in_buffer = dest->bufsize;
-  return TRUE;
+  return static_cast<boolean>(TRUE);
 }
 
 // -----------------------------------------------------------------------------
@@ -122,22 +122,22 @@ boolean MemFillInputBuffer(j_decompress_ptr cinfo) {
   if (src->pub.bytes_in_buffer == 0 && src->pub.next_input_byte == src->data) {
     // empty file -> treated as an error.
     ERREXIT(cinfo, JERR_INPUT_EMPTY);
-    return FALSE;
+    return static_cast<boolean>(FALSE);
   } else if (src->pub.bytes_in_buffer) {
     // if there's still some data left, it's probably corrupted
-    return src->try_recover_truncated_jpeg ? TRUE : FALSE;
+    return src->try_recover_truncated_jpeg ? static_cast<boolean>(TRUE) : static_cast<boolean>(FALSE);
   } else if (src->pub.next_input_byte != kEOIBuffer &&
              src->try_recover_truncated_jpeg) {
     // In an attempt to recover truncated files, we insert a fake EOI
     WARNMS(cinfo, JWRN_JPEG_EOF);
     src->pub.next_input_byte = kEOIBuffer;
     src->pub.bytes_in_buffer = 2;
-    return TRUE;
+    return static_cast<boolean>(TRUE);
   } else {
     // We already inserted a fake EOI and it wasn't enough, so this time
     // it's really an error.
     ERREXIT(cinfo, JERR_FILE_READ);
-    return FALSE;
+    return static_cast<boolean>(FALSE);
   }
 }
 

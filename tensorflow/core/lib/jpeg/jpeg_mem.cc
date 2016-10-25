@@ -110,7 +110,7 @@ uint8* UncompressLow(const void* srcdata, FewerArgsForCompiler* argball) {
 
   jpeg_create_decompress(&cinfo);
   SetSrc(&cinfo, srcdata, datasize, flags.try_recover_truncated_jpeg);
-  jpeg_read_header(&cinfo, TRUE);
+  jpeg_read_header(&cinfo, static_cast<boolean>(TRUE));
 
   // Set components automatically if desired, autoconverting cmyk to rgb.
   if (components == 0) components = std::min(cinfo.num_components, 3);
@@ -408,7 +408,7 @@ bool GetImageInfo(const void* srcdata, int datasize, int* width, int* height,
   jpeg_create_decompress(&cinfo);
   SetSrc(&cinfo, srcdata, datasize, false);
 
-  jpeg_read_header(&cinfo, TRUE);
+  jpeg_read_header(&cinfo, static_cast<boolean>(TRUE));
   jpeg_start_decompress(&cinfo);  // required to transfer image size to cinfo
   if (width) *width = cinfo.output_width;
   if (height) *height = cinfo.output_height;
@@ -502,13 +502,13 @@ bool CompressInternal(const uint8* srcdata, int width, int height,
       return false;
   }
   jpeg_set_defaults(&cinfo);
-  if (flags.optimize_jpeg_size) cinfo.optimize_coding = TRUE;
+  if (flags.optimize_jpeg_size) cinfo.optimize_coding = static_cast<boolean>(TRUE);
 
   cinfo.density_unit = flags.density_unit;  // JFIF code for pixel size units:
                                             // 1 = in, 2 = cm
   cinfo.X_density = flags.x_density;        // Horizontal pixel density
   cinfo.Y_density = flags.y_density;        // Vertical pixel density
-  jpeg_set_quality(&cinfo, flags.quality, TRUE);
+  jpeg_set_quality(&cinfo, flags.quality, static_cast<boolean>(TRUE));
 
   if (flags.progressive) {
     jpeg_simple_progression(&cinfo);
@@ -523,7 +523,7 @@ bool CompressInternal(const uint8* srcdata, int width, int height,
     }
   }
 
-  jpeg_start_compress(&cinfo, TRUE);
+  jpeg_start_compress(&cinfo, static_cast<boolean>(TRUE));
 
   // Embed XMP metadata if any
   if (!flags.xmp_metadata.empty()) {
