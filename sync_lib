@@ -3,8 +3,13 @@
 set -e
 set -x
 
+header_path=~/projects/install/tf_headers
+echo "USAGE: $0 [header_path], default is $header_path"
+if [ $# == 1 ]; then
+    header_path=$1
+fi
+
 cp bazel-bin/tensorflow/libtensorflow_all.so /usr/local/lib/libtensorflow_all.so
-header_path=~/projects/install/tmp
 mkdir -p $header_path
 rsync -avz --delete tensorflow $header_path/
 find $header_path/tensorflow -type f ! -name "*.h" -delete
