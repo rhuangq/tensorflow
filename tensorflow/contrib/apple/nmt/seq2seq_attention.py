@@ -248,6 +248,7 @@ class ModelConfig(dict):
     self.attention_type = 0
     self.attention_dim = 256
     self.readout_dim = 256
+    self.top_k = 3
 
     self['batch_size'] = self.batch_size
     self['embed_size'] = self.embed_size
@@ -269,6 +270,7 @@ class ModelConfig(dict):
     self['attention_type'] = self.attention_type
     self['attention_dim'] = self.attention_dim
     self['readout_dim'] = self.readout_dim
+    self['top_k'] = self.top_k
 
   def __getattr__(self, item):
     if item in self:
@@ -496,10 +498,6 @@ def create_recurrent_attention_graph(config):
 
 
 
-
-
-
-
 def _create_encoder_eval_graph(config):
   """no padding"""
   batch_size = config.batch_size
@@ -643,6 +641,10 @@ def _create_decoder_eval_graph(config):
     softmax_w = tf.get_variable("softmax_w", [readout_dim, target_vocab_size], dtype=dtype)
     softmax_b = tf.get_variable("softmax_b", [target_vocab_size], dtype=dtype)
     logits = tf.add(tf.matmul(linear_output, softmax_w), softmax_b, name="__QNNO__prediction")
+    top_k = tf.placeholder_with_default(config.top_k, (), name="__QNNI__top_k")
+    top_k_scores, top_k_indices = tf.nn.top_k(logits, top_k, sorted=True)
+    top_k_scores = tf.identity(top_k_scores, name="__QNNO__top_k_scores")
+    top_k_indices = tf.identity(top_k_indices, name="__QNNO__top_k_indices")
 
 
 
@@ -902,8 +904,8 @@ def inference(FLAGS):
     encoder_output = ops_io['encoder_output']
     tgt_gen_init_state = ops_io['tgt_gen_init_state']
     tgt_gen_final_state = ops_io['tgt_gen_final_state']
-    logits = ops_io['logits']
-    preds = tf.reshape(tf.cast(tf.argmax(logits, 1), tf.int32), [-1])
+    top_k_scores = ops_io['top_k_scores']
+    top_k_indices = ops_io['top_k_indices']
 
     fout = open(FLAGS.output_file, 'wb')
     for seq in data_set:
@@ -946,7 +948,7 @@ def inference(FLAGS):
            decoder_state,
            tgt_gen_state
            ] = session.run([attention,
-                            preds,
+                            top_k_indices,
                             decoder_final_state,
                             tgt_gen_final_state,
                             ], feed_dict)
@@ -955,30 +957,29 @@ def inference(FLAGS):
            pred,
            decoder_state,
            ] = session.run([attention,
-                            preds,
+                            top_k_indices,
                             decoder_final_state,
                             ], feed_dict)
         elif not has_attention and has_gen_layers:
           [pred,
            decoder_state,
            tgt_gen_state
-           ] = session.run([preds,
+           ] = session.run([top_k_indices,
                             decoder_final_state,
                             tgt_gen_final_state,
                             ], feed_dict)
         else:
           [pred,
            decoder_state,
-           ] = session.run([preds,
+           ] = session.run([top_k_indices,
                             decoder_final_state,
                             ], feed_dict)
 
 
-
-        output.append(pred[0])
+        output.append(pred[0][0])
 
       out_words = [tgt_id2word[idx] for idx in output[1:-1]]
-      fout.write(b" ".join(out_words)+b"\n")
+      fout.write(b" ".join(out_words)+b" \n")
 
     fout.close()
 
@@ -992,7 +993,8 @@ def load_eval_graph(graph_file, has_attention, has_gen_layers):
              'TranslationModel/encoder/__QNNO__encoder_final_state:0',
              'TranslationModel/decoder/RNN/__QNNI__decoder_state:0',
              'TranslationModel/decoder/RNN/__QNNO__decoder_state:0',
-             'TranslationModel/output/__QNNO__prediction:0',
+             'TranslationModel/output/__QNNO__top_k_scores:0',
+             'TranslationModel/output/__QNNO__top_k_indices:0',
              ]
 
   if has_attention:
@@ -1017,7 +1019,8 @@ def load_eval_graph(graph_file, has_attention, has_gen_layers):
      ops_io['encoder_final_state'],
      ops_io['decoder_init_state'],
      ops_io['decoder_final_state'],
-     ops_io['logits'],
+     ops_io['top_k_scores'],
+     ops_io['top_k_indices'],
      ops_io['encoder_output'],
      ops_io['encoder_dot_value_out'],
      ops_io['encoder_add_value_out'],
@@ -1034,7 +1037,8 @@ def load_eval_graph(graph_file, has_attention, has_gen_layers):
      ops_io['encoder_final_state'],
      ops_io['decoder_init_state'],
      ops_io['decoder_final_state'],
-     ops_io['logits'],
+     ops_io['top_k_scores'],
+     ops_io['top_k_indices'],
      ops_io['encoder_output'],
      ops_io['encoder_dot_value_out'],
      ops_io['encoder_add_value_out'],
@@ -1051,7 +1055,8 @@ def load_eval_graph(graph_file, has_attention, has_gen_layers):
      ops_io['encoder_final_state'],
      ops_io['decoder_init_state'],
      ops_io['decoder_final_state'],
-     ops_io['logits'],
+     ops_io['top_k_scores'],
+     ops_io['top_k_indices'],
      ops_io['tgt_gen_init_state'],
      ops_io['tgt_gen_final_state'],
      ] = tf.import_graph_def(graph_def, {}, entries, name="")
@@ -1068,7 +1073,8 @@ def load_eval_graph(graph_file, has_attention, has_gen_layers):
      ops_io['encoder_final_state'],
      ops_io['decoder_init_state'],
      ops_io['decoder_final_state'],
-     ops_io['logits'],
+     ops_io['top_k_scores'],
+     ops_io['top_k_indices'],
      ] = tf.import_graph_def(graph_def, {}, entries, name="")
     ops_io['encoder_output'] = None
     ops_io['encoder_dot_value_out'] = None
