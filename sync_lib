@@ -3,14 +3,16 @@
 set -e
 set -x
 
-header_path=~/projects/install/tf_headers
-echo "USAGE: $0 [header_path], default is $header_path"
+install_path=~/projects/install/tensorflow
+echo "USAGE: $0 [install_path], default is $install_path"
 if [ $# == 1 ]; then
-    header_path=$1
+    install_path=$1
 fi
 
-cp bazel-bin/tensorflow/libtensorflow_all.so /usr/local/lib/libtensorflow_all.so
+header_path=$install_path/include
 mkdir -p $header_path
+mkdir -p $install_path/lib
+cp -f bazel-bin/tensorflow/libtensorflow_all.so $install_path/lib/
 rsync -avz --delete tensorflow $header_path/
 find $header_path/tensorflow -type f ! -name "*.h" -delete
 cp bazel-genfiles/tensorflow/core/framework/*.h  $header_path/tensorflow/core/framework
@@ -22,3 +24,4 @@ cp bazel-genfiles/tensorflow/cc/ops/*.h  $header_path/tensorflow/cc/ops
 
 rsync -avz --delete third_party $header_path/
 rm -rf $header_path/third_party/py $header_path/third_party/avro
+find $install_path -type d -name __pycache__ |xargs rm -rf
