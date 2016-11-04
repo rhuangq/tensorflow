@@ -21,7 +21,8 @@ BZL_FILE_PATH=tensorflow/workspace.bzl
 
 # Temporarily specify the Eigen URL manually while we're waiting on the build
 # file changes to be synced.
-EIGEN_URL=http://bitbucket.org/eigen/eigen/get/8106cca06137.tar.gz
+#EIGEN_URL=http://bitbucket.org/eigen/eigen/get/8106cca06137.tar.gz
+EIGEN_URL=http://bitbucket.org/eigen/eigen/get/46ee714e25d5.tar.gz
 GEMMLOWP_URL="$(grep -o 'http.*github.com/google/gemmlowp/.*tar\.gz' "${BZL_FILE_PATH}")"
 GOOGLETEST_URL="https://github.com/google/googletest/archive/release-1.8.0.tar.gz"
 PROTOBUF_URL="$(grep -o 'http.*github.com/google/protobuf/.*tar\.gz' "${BZL_FILE_PATH}")"

@@ -61,8 +61,9 @@ HOST_BINDIR := $(MAKEFILE_DIR)/gen/host_bin/
 HOST_GENDIR := $(MAKEFILE_DIR)/gen/host_obj/
 
 # Settings for the host compiler.
-HOST_CXX := $(CC_PREFIX) gcc
-HOST_CXXFLAGS := --std=c++11
+HOST_CXX := $(CC_PREFIX) clang++
+HOST_CXXFLAGS := -std=c++11
+HOST_CXXFLAGS += -stdlib=libc++
 HOST_LDOPTS := 
 ifeq ($(HAS_GEN_HOST_PROTOC),true)
 	HOST_LDOPTS += -L$(MAKEFILE_DIR)/gen/protobuf-host/lib
@@ -79,10 +80,10 @@ ifeq ($(HAS_GEN_HOST_PROTOC),true)
 endif
 # This is at the end so any globally-installed frameworks like protobuf don't
 # override local versions in the source tree.
-HOST_INCLUDES += -I/usr/local/include
+HOST_INCLUDES += -I/usr/include
 
 HOST_LIBS := \
--lstdc++ \
+-lc++ \
 -lprotobuf \
 -lpthread \
 -lm \
@@ -135,11 +136,11 @@ DEPDIR := $(GENDIR)dep/
 $(shell mkdir -p $(DEPDIR) >/dev/null)
 
 # Settings for the target compiler.
-CXX := $(CC_PREFIX) gcc
+CXX := $(CC_PREFIX) clang
 OPTFLAGS := -O0
-CXXFLAGS := --std=c++11 -DIS_SLIM_BUILD -fno-exceptions -DNDEBUG $(OPTFLAGS)
+CXXFLAGS := -std=c++11 -stdlib=libc++ -DIS_SLIM_BUILD -fno-exceptions -DNDEBUG $(OPTFLAGS)
 LDFLAGS := \
--L/usr/local/lib
+-L/usr/lib
 DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.Td
 
 INCLUDES := \
@@ -153,10 +154,10 @@ ifeq ($(HAS_GEN_HOST_PROTOC),true)
 endif
 # This is at the end so any globally-installed frameworks like protobuf don't
 # override local versions in the source tree.
-INCLUDES += -I/usr/local/include
+INCLUDES += -I/usr/include
 
 LIBS := \
--lstdc++ \
+-lc++ \
 -lprotobuf \
 -lz \
 -lm
@@ -404,7 +405,8 @@ endif
 
 # This library is the main target for this makefile. It will contain a minimal
 # runtime that can be linked in to other programs.
-LIB_NAME := libtensorflow-core.a
+#LIB_NAME := libtensorflow-core.a
+LIB_NAME := libtensorflow_all.a
 LIB_PATH := $(LIBDIR)$(LIB_NAME)
 
 # A small example program that shows how to link against the library.

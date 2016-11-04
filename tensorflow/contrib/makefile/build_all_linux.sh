@@ -33,4 +33,6 @@ tensorflow/contrib/makefile/download_dependencies.sh
 tensorflow/contrib/makefile/compile_linux_protobuf.sh
 
 # Build TensorFlow.
-make -f tensorflow/contrib/makefile/Makefile OPTFLAGS="-O3" -j 8
+export CC=clang
+export CXX=clang++
+make VERBOSE=1 -f tensorflow/contrib/makefile/Makefile OPTFLAGS="-O3" -j 1

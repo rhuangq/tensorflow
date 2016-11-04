@@ -35,7 +35,7 @@ then
   exit 1
 fi
 
-./configure --prefix="${GENDIR}"
+./configure --prefix="${GENDIR}" CC=clang CXX=clang++  CXXFLAGS='-g -DNDEBUG -std=c++11 -stdlib=libc++' LDFLAGS='-lc++' PROTOBUF_OPT_FLAG='-O2' ac_ct_CXX=clang++
 if [ $? -ne 0 ]
 then
   echo "./configure command failed."
