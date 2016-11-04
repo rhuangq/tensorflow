@@ -35,4 +35,4 @@ tensorflow/contrib/makefile/compile_linux_protobuf.sh
 # Build TensorFlow.
 export CC=clang
 export CXX=clang++
-make VERBOSE=1 -f tensorflow/contrib/makefile/Makefile OPTFLAGS="-O3" -j 1
+make VERBOSE=1 -f tensorflow/contrib/makefile/Makefile OPTFLAGS="-O3" -j 8

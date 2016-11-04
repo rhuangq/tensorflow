@@ -406,8 +406,9 @@ endif
 # This library is the main target for this makefile. It will contain a minimal
 # runtime that can be linked in to other programs.
 #LIB_NAME := libtensorflow-core.a
-LIB_NAME := libtensorflow_all.a
-LIB_PATH := $(LIBDIR)$(LIB_NAME)
+LIB_NAME := libtensorflow_all
+LIB_PATH := $(LIBDIR)$(LIB_NAME).a
+LIB_PATH_SO := $(LIBDIR)$(LIB_NAME).so
 
 # A small example program that shows how to link against the library.
 BENCHMARK_NAME := $(BINDIR)benchmark
@@ -482,7 +483,7 @@ BENCHMARK_OBJS := $(addprefix $(OBJDIR), $(BENCHMARK_SRCS:.cc=.o))
 .PHONY: clean cleantarget
 
 # The target that's compiled if there's no command-line arguments.
-all: $(LIB_PATH) $(BENCHMARK_NAME)
+all: $(LIB_PATH) $(LIB_PATH_SO) $(BENCHMARK_NAME)
 
 # Rules for target compilation.
 
@@ -495,6 +496,10 @@ tensorflow/core/util/version_info.cc: .phony_version_info
 $(LIB_PATH): $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(AR) $(ARFLAGS) $(LIB_PATH) $(LIB_OBJS)
+
+$(LIB_PATH_SO): $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) -fPIC -shared $(CXXFLAGS) -o $(LIB_PATH_SO) $(LIB_OBJS)
 
 $(BENCHMARK_NAME): $(BENCHMARK_OBJS) $(LIB_PATH)
 	@mkdir -p $(dir $@)
